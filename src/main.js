@@ -1,5 +1,5 @@
 import './style.css';
-import './ui-layout.css';
+import './hud.css';
 import * as THREE from 'three';
 import { createLook } from './look/look.js';
 import { createCity } from './world/city.js';
@@ -18,7 +18,6 @@ import { Missions } from './systems/missions.js';
 import { Hud } from './systems/hud.js';
 import { Minimap } from './systems/minimap.js';
 import { Settings } from './systems/settings.js';
-import { createLayout } from './systems/layout.js';
 import { Achievements } from './systems/achievements.js';
 import { PhotoMode } from './systems/photo.js';
 import { cycleStyle, randomStyle } from './look/wardrobe.js';
@@ -59,9 +58,9 @@ save.activeSlot = currentSlot();
 let sessionStartHours = save.hours;
 // ~6 min of day followed by ~5 min of night, then repeat.
 const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
+const hud = new Hud(ui);
 const input = new Input(ui);
 const audio = new GameAudio();
-const hud = new Hud(ui);
 const achievements = new Achievements(save, { toast: (msg) => hud.toast(msg) });
 const photo = new PhotoMode(camera, canvas, {
   hud,
@@ -81,10 +80,11 @@ const settings = new Settings(ui, look, save, {
   onSaveSlot: (slot) => { save.activeSlot = slot; menu.close(); },
   onLoadSlot: (slot, state) => applySlotState(slot, state),
   onLook: () => openWardrobe(),
+  onEditHud: () => hud.openEdit(),
   onQuality: (preset) => weather.setLowQuality(preset.key === 'low'),
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
-const layout = createLayout(ui, { input, hud, minimap });
+hud.attachMinimap(minimap.wrap);
 const initialSpawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
 const player = new Player(scene, look, initialSpawn.x, initialSpawn.z, save.armor);
 player.applyStyle(save.style);
@@ -244,7 +244,7 @@ function endLookDrag(e) {
   dragging = false;
   dragPointer = null;
 }
-for (const surface of [canvas, layout.lookZone]) {
+for (const surface of [canvas, hud.lookZone]) {
   surface?.addEventListener('pointerdown', (e) => beginLookDrag(e, surface));
   surface?.addEventListener('pointermove', moveLookDrag);
   surface?.addEventListener('pointerup', endLookDrag);
@@ -315,7 +315,7 @@ function openQuickMenu() {
     } },
     { key: 'photo', label: 'PHOTO', sub: 'Free camera', run: () => {
       photo.enter(player, cameraYaw);
-      hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
+      hud.toast('PHOTO MODE · DRAG TO ORBIT · TAP SNAP · TAP ✕ TO EXIT');
     } },
     { key: 'wx', label: 'WX', sub: `Now: ${weather.label()}`, run: cycleWeather },
     { key: 'radio', label: 'RADIO', sub: audio.radioLabel(), run: nextRadio },
@@ -327,15 +327,14 @@ function openQuickMenu() {
     { key: 'settings', label: 'SETTINGS', sub: 'Graphics, look and saves', run: () => settings.open() },
   ]);
 }
-document.getElementById('hud-settings')?.addEventListener('click', openQuickMenu);
-
 function handleActions() {
-  // Photo mode takes over the action buttons: E / HORN snap, K exits.
+  if (input.consume('menu')) openQuickMenu();
+  // Photo mode takes over the action buttons: SNAP captures, ✕ exits.
   if (photo.active) {
-    if (input.consume('photo')) {
+    if (input.consume('photoExit') || input.consume('photo')) {
       photo.exit();
       hud.toast('PHOTO MODE OFF');
-    } else if (input.consume('e') || input.consume('horn')) {
+    } else if (input.consume('snap') || input.consume('e') || input.consume('horn')) {
       if (photo.requestCapture()) hud.toast('SNAP!');
     }
     return;
@@ -383,7 +382,7 @@ function handleActions() {
   if (input.consume('radio')) nextRadio();
   if (input.consume('photo')) {
     photo.enter(player, cameraYaw);
-    hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
+    hud.toast('PHOTO MODE · DRAG TO ORBIT · TAP SNAP · TAP ✕ TO EXIT');
   }
   if (input.consume('look')) {
     openWardrobe();
@@ -625,13 +624,15 @@ function vehicleRay(from, to, v) {
   return Math.max(0, tmin);
 }
 
-function clearCameraFraction(target) {
-  let fraction = world.cameraRay(camFrom, target, 0.6);
-  for (const v of traffic.vehicles) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
-  for (const v of police.cars) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
-  for (const v of economy.ownedVehicles) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
+function clearCameraFraction(from, target) {
+  let fraction = world.cameraRay(from, target, 0.6);
+  for (const v of traffic.vehicles) fraction = Math.min(fraction, vehicleRay(from, target, v));
+  for (const v of police.cars) fraction = Math.min(fraction, vehicleRay(from, target, v));
+  for (const v of economy.ownedVehicles) fraction = Math.min(fraction, vehicleRay(from, target, v));
   return fraction;
 }
+// Free camera obeys the same building/vehicle ray as the chase camera.
+photo.raycast = (from, to) => clearCameraFraction(from, to);
 
 function updateCamera(dt, world) {
   lookHold = Math.max(0, lookHold - dt);
@@ -653,10 +654,10 @@ function updateCamera(dt, world) {
     player.pos.y + height,
     player.pos.z + dz * dist,
   );
-  const fraction = Math.max(2 / dist, clearCameraFraction(camTarget));
+  const fraction = Math.max(2 / dist, clearCameraFraction(camFrom, camTarget));
   camDesired.copy(camFrom).lerp(camTarget, fraction);
   camera.position.lerp(camDesired, 1 - Math.exp(-(player.vehicle ? 7 : 9) * dt));
-  const actual = clearCameraFraction(camera.position);
+  const actual = clearCameraFraction(camFrom, camera.position);
   if (actual < 1) camera.position.lerpVectors(camFrom, camera.position, Math.max(0.04, actual));
   lookNow.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
   camLook.lerp(lookNow, 1 - Math.exp(-12 * dt));
@@ -757,13 +758,18 @@ function frame(now) {
   gameTime += dt;
   input.poll();
   if (menu.isOpen && photo.active) photo.exit();
-  // Touch controls follow the situation: on foot, driving, at a mission/beacon,
-  // or inside photo mode. The joystick stays available in every context.
-  input.setContext(
-    photo.active ? 'photo'
-      : player.vehicle ? 'drive'
-        : economy.nearest(player.pos, 18) ? 'mission' : 'foot',
-  );
+  // One mode drives both the button set and the input context. The joystick
+  // stays available in every situation; the bottom-centre zone stays empty.
+  const nearVehicle = !player.vehicle && !!traffic.nearestVehicle(player.pos);
+  const hudMode = photo.active ? 'photo'
+    : (menu.isOpen || settings.isOpen) ? 'menu'
+      : player.vehicle ? (player.vehicle.type === 'bike' ? 'bike' : 'car')
+        : nearVehicle ? 'nearVehicle' : 'foot';
+  input.setContext(hudMode);
+  hud.setMode(hudMode, {
+    nitro: player.vehicle ? player.vehicle.boost : 0,
+    autoSprint: save.autoSprint === true,
+  });
   lights.update(dt);
   weather.update(dt, player);
   look.setTime(currentHours());
@@ -893,5 +899,5 @@ requestAnimationFrame(frame);
 // Small debug surface for testing in the browser console.
 window.__jha = {
   player, world, traffic, police, missions, wanted, economy, menu, look, save,
-  settings, minimap, lights, weather, audio, hud, input, photo, achievements, layout,
+  settings, minimap, lights, weather, audio, hud, input, photo, achievements, layout: hud.zones,
 };

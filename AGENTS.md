@@ -9,3 +9,5 @@
   static geometry for repeats, reuse materials, auto quality tiers, check FPS after each feature.
 - Touch controls are first-class; keyboard is for desktop testing.
 - Keep gameplay systems decoupled: `core/`, `look/`, `world/`, `entities/`, `systems/`.
+
+- সবসময় docs/MASTER_SPEC.md অনুসরণ করো।

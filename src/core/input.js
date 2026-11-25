@@ -1,3 +1,7 @@
+// Input owns event handling and reusable frame state. HUD owns the buttons.
+// Every touch target is a [data-action] element inside #hud; the joystick is
+// created here and placed by the HUD into the BL zone.
+
 const PAD_BUTTONS = [
   [0, 'jump'], [1, 'hb'], [2, 'horn'], [3, 'radio'],
   [5, 'boost'], [6, 'brake'], [7, 'gas'], [8, 'look'], [9, 'photo'],
@@ -25,6 +29,7 @@ const KEY_ACTIONS = {
 
 export class Input {
   constructor(root) {
+    this.root = root;
     this.keys = {};
     this.held = {};
     this.pressed = {};
@@ -37,6 +42,7 @@ export class Input {
     this.driveResult = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.padNext = {};
     this.padPrev = {};
+    this.holdTimers = new Map();
     for (const [, action] of PAD_BUTTONS) {
       this.padNext[action] = false;
       this.padPrev[action] = false;
@@ -52,53 +58,18 @@ export class Input {
       <div class="stick-base" id="stick-base">
         <div class="stick-knob" id="stick-knob"></div>
       </div>`;
-    const right = document.createElement('div');
-    right.className = 'touch-right';
-    // Only the buttons that make sense for the current situation are shown.
-    // The joystick is always present; everything else is switched in groups.
-    // LOOK is intentionally absent: the right half of the screen is the look
-    // surface. Keyboard L and gamepad Back still open the wardrobe.
-    const buttons = [
-      ['gas', 'GAS', 'gas', 'drive'],
-      ['brake', 'BRAKE', 'brake', 'drive'],
-      ['hb', 'DRIFT', 'hb', 'drive'],
-      ['boost', 'NITRO', 'boost nitro', 'drive'],
-      ['boost', 'SPRINT', 'boost sprint', 'foot'],
-      ['e', 'ENTER', 'e', 'drive foot mission'],
-      ['horn', 'HORN', 'horn', 'drive foot mission'],
-      ['radio', 'RADIO', 'radio', 'drive foot'],
-      ['photo', 'PHOTO', 'photo', 'drive foot mission photo'],
-      ['jump', 'JUMP', 'jump', 'foot'],
-      ['jobs', 'JOBS', 'jobs', 'foot mission'],
-      ['shop', 'SHOP', 'shop', 'foot mission'],
-      ['weather', 'WX', 'weather', 'foot'],
-      ['mission', 'START', 'mission', 'mission'],
-    ];
-    right.innerHTML = buttons
-      .map(([action, label, cls, contexts]) => `<button class="tbtn ${cls}" data-action="${action}" data-contexts="${contexts}" aria-label="${label}">${label}</button>`)
-      .join('');
-    root.append(left, right);
+    const zone = root.querySelector('#zone-bl');
+    (zone || root).append(left);
     this.base = left.querySelector('#stick-base');
     this.knob = left.querySelector('#stick-knob');
-    this.right = right;
-    this.buttons = [...right.querySelectorAll('button')];
-    this.context = null;
-    this.setContext('foot');
+    this.right = root.querySelector('#touch-right');
+    this.buttons = this.right ? [...this.right.querySelectorAll('.tbtn')] : [];
+    this.context = 'foot';
   }
 
   setContext(context) {
-    if (context === this.context) return;
     this.context = context;
-    this.right.dataset.context = context;
-    for (const btn of this.buttons) {
-      const show = (btn.dataset.contexts || '').split(' ').includes(context);
-      btn.hidden = !show;
-      if (!show) {
-        const action = btn.dataset.action;
-        this.held[action] = false;
-        btn.classList.remove('down');
-      }
-    }
+    if (this.right) this.right.dataset.context = context;
   }
 
   setButtonLabel(action, label) {
@@ -106,14 +77,21 @@ export class Input {
     if (btn && btn.textContent !== label) btn.textContent = label;
   }
 
+  // Programmatic presses share the same edge detection as touch and keyboard.
+  press(action) {
+    if (!this.held[action]) this.pressed[action] = true;
+    this.held[action] = true;
+  }
+
+  release(action) {
+    this.held[action] = false;
+  }
+
   _bind() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.code] = true;
       const a = KEY_ACTIONS[e.code];
-      if (a) {
-        if (!this.held[a]) this.pressed[a] = true;
-        this.held[a] = true;
-      }
+      if (a) this.press(a);
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => {
@@ -128,8 +106,8 @@ export class Input {
 
     const moveStick = (e) => {
       const r = this.base.getBoundingClientRect();
-      let x = (e.clientX - (r.left + r.width / 2)) / (r.width * 0.36);
-      let y = (e.clientY - (r.top + r.height / 2)) / (r.height * 0.36);
+      let x = (e.clientX - (r.left + r.width / 2)) / (r.width * 0.36 || 1);
+      let y = (e.clientY - (r.top + r.height / 2)) / (r.height * 0.36 || 1);
       const len = Math.hypot(x, y);
       if (len > 1) {
         x /= len;
@@ -140,40 +118,63 @@ export class Input {
       this.knob.style.transform = `translate(${x * 34}px, ${y * 34}px)`;
     };
     this.base.addEventListener('pointerdown', (e) => {
+      if (this.root.dataset.editing === '1') return;
       this.stick.active = true;
       this.stick.id = e.pointerId;
-      this.base.setPointerCapture(e.pointerId);
+      this.base.setPointerCapture?.(e.pointerId);
       moveStick(e);
     });
     this.base.addEventListener('pointermove', (e) => {
       if (this.stick.active && e.pointerId === this.stick.id) moveStick(e);
     });
-    const release = (e) => {
+    const releaseStick = (e) => {
       if (e.pointerId !== this.stick.id) return;
       this.stick.active = false;
       this.stick.x = 0;
       this.stick.y = 0;
       this.knob.style.transform = 'translate(0, 0)';
     };
-    this.base.addEventListener('pointerup', release);
-    this.base.addEventListener('pointercancel', release);
+    this.base.addEventListener('pointerup', releaseStick);
+    this.base.addEventListener('pointercancel', releaseStick);
 
-    for (const btn of this.buttons) {
+    // Delegation means HUD buttons can be replaced or moved freely.
+    this.root.addEventListener('pointerdown', (e) => {
+      if (this.root.dataset.editing === '1') return;
+      const btn = e.target.closest?.('[data-action]');
+      if (!btn || btn.hidden) return;
+      e.preventDefault();
       const action = btn.dataset.action;
-      btn.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        if (!this.held[action]) this.pressed[action] = true;
-        this.held[action] = true;
-        btn.classList.add('down');
-      });
-      const up = () => {
-        this.held[action] = false;
-        btn.classList.remove('down');
-      };
-      btn.addEventListener('pointerup', up);
-      btn.addEventListener('pointercancel', up);
-      btn.addEventListener('pointerleave', up);
-    }
+      this.press(action);
+      btn.classList.add('down');
+      const holdAction = btn.dataset.holdAction;
+      if (holdAction) {
+        const timer = window.setTimeout(() => {
+          this.holdTimers.delete(btn);
+          btn.dataset.held = '1';
+          this.press(holdAction);
+        }, 450);
+        this.holdTimers.set(btn, timer);
+      }
+    });
+    const releaseButton = (e) => {
+      const btn = e.target.closest?.('[data-action]');
+      if (!btn) return;
+      const timer = this.holdTimers.get(btn);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        this.holdTimers.delete(btn);
+      }
+      const action = btn.dataset.action;
+      this.held[action] = false;
+      btn.classList.remove('down');
+      if (btn.dataset.held === '1') {
+        this.held[btn.dataset.holdAction] = false;
+        delete btn.dataset.held;
+      }
+    };
+    this.root.addEventListener('pointerup', releaseButton);
+    this.root.addEventListener('pointercancel', releaseButton);
+    this.root.addEventListener('pointerleave', releaseButton);
   }
 
   // Standard gamepad mapping: sticks steer/drive, A jump, B handbrake,

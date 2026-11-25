@@ -20,6 +20,8 @@ export class PhotoMode {
     this.shots = 0;
     this._desired = new THREE.Vector3();
     this._look = new THREE.Vector3();
+    this._from = new THREE.Vector3();
+    this.raycast = null;
   }
 
   toggle(player = null, heading = 0) {
@@ -96,11 +98,17 @@ export class PhotoMode {
     if (!this.active || !player) return;
     const dist = this.distance;
     const flat = Math.cos(this.pitch) * dist;
+    this._from.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
     this._desired.set(
       player.pos.x - Math.sin(this.yaw) * flat,
       player.pos.y + 1.5 + Math.sin(this.pitch) * dist,
       player.pos.z - Math.cos(this.yaw) * flat,
     );
+    // Pull the free camera in front of walls and parked cars.
+    if (typeof this.raycast === 'function') {
+      const fraction = clamp(this.raycast(this._from, this._desired), 0.18, 1);
+      this._desired.lerpVectors(this._from, this._desired, fraction);
+    }
     this.camera.position.lerp(this._desired, 1 - Math.exp(-8 * dt));
     this._look.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
     this.camera.lookAt(this._look);

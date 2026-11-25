@@ -10,13 +10,14 @@ const TIERS = [
 const MODES = ['auto', 'high', 'medium', 'low'];
 
 export class Settings {
-  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {}, onQuality = () => {} } = {}) {
+  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {}, onEditHud = () => {}, onQuality = () => {} } = {}) {
     this.look = look;
     this.save = save;
     this.toast = toast;
     this.onSaveSlot = onSaveSlot;
     this.onLoadSlot = onLoadSlot;
     this.onLook = onLook;
+    this.onEditHud = onEditHud;
     this.onQuality = onQuality;
     this.mode = MODES.includes(save.quality) ? save.quality : 'auto';
     const fallbackTier = isMobile ? 1 : 0;
@@ -49,6 +50,7 @@ export class Settings {
         <p class="settings-note">AUTO lowers effects when the frame rate drops. Pick a fixed level if you prefer a steady look.</p>
         <button class="settings-toggle" id="fps-toggle">FPS METER: ON</button>
         <button class="settings-toggle" id="look-button">CHARACTER LOOK</button>
+        <button class="settings-toggle" id="edit-hud-button">EDIT HUD</button>
         <div class="settings-stat" id="settings-stat">60 FPS · AUTO · MEDIUM</div>
         <div class="settings-tip">Settings are saved automatically.</div>
         <div class="settings-label" style="padding-top:10px">SAVE SLOTS</div>
@@ -61,6 +63,7 @@ export class Settings {
     this.slotRow = this.overlay.querySelector('#slot-row');
     this.fpsToggle = this.overlay.querySelector('#fps-toggle');
     this.lookButton = this.overlay.querySelector('#look-button');
+    this.editHudButton = this.overlay.querySelector('#edit-hud-button');
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
 
@@ -80,6 +83,10 @@ export class Settings {
     this.lookButton.addEventListener('click', () => {
       this.close();
       this.onLook();
+    });
+    this.editHudButton.addEventListener('click', () => {
+      this.close();
+      this.onEditHud();
     });
     this._renderSlots();
 
@@ -205,22 +212,25 @@ export class Settings {
     if (this.fpsSmooth > 45) this.highTime += dt;
     else this.highTime = Math.max(0, this.highTime - dt * 0.8);
 
-    if (this.lowTime > 1.8 && this.autoTier < 2 && this.cooldown <= 0) {
-      if (this.elapsed - this.lastUpgrade < 25) {
+    // Spec: drop after 3s below 28 FPS, rise after 5s above 45 FPS.
+    // A 12s cooldown plus an anti-flap lock keeps the tier from oscillating.
+    if (this.lowTime >= 3 && this.autoTier < 2 && this.cooldown <= 0) {
+      if (this.elapsed - this.lastUpgrade < 60) {
         this.upgradeLocked = true;
-        this.upgradeLockUntil = this.elapsed + 180;
+        this.upgradeLockUntil = this.elapsed + 60;
       }
       this.autoTier++;
+      this.lastUpgrade = this.elapsed;
       this.lowTime = 0;
       this.highTime = 0;
-      this.cooldown = 8;
+      this.cooldown = 12;
       this._apply();
       if (!this.isOpen) this.toast(`QUALITY: ${this._preset().label}`);
       return;
     }
 
     if (
-      this.highTime > 9 &&
+      this.highTime >= 5 &&
       this.autoTier > 0 &&
       !this.upgradeLocked &&
       this.cooldown <= 0 &&
@@ -230,7 +240,7 @@ export class Settings {
       this.lastUpgrade = this.elapsed;
       this.highTime = 0;
       this.lowTime = 0;
-      this.cooldown = 10;
+      this.cooldown = 12;
       this._apply();
       if (!this.isOpen) this.toast(`QUALITY: ${this._preset().label}`);
     }
