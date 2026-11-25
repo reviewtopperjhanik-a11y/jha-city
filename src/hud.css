@@ -150,6 +150,7 @@
 #hud-settings, #hud-exit-photo {
   min-width: 44px; min-height: 44px; width: 44px; height: 44px;
   display: grid; place-items: center; padding: 0;
+  flex: 0 0 auto;
   border-radius: 12px;
   border: 1px solid var(--hud-line);
   background: var(--hud-bg);
@@ -160,7 +161,10 @@
   transform: translate(var(--dx, 0px), var(--dy, 0px)) scale(var(--scale, 1));
   opacity: var(--alpha, 1);
 }
-#hud-exit-photo { border-color: rgba(255, 51, 85, 0.7); color: #ff8fa3; font-size: 18px; }
+#hud-exit-photo {
+  width: 48px; height: 48px; min-width: 48px; min-height: 48px;
+  border-color: rgba(255, 51, 85, 0.7); color: #ff8fa3; font-size: 18px;
+}
 
 /* Speedo lives in TR, never next to GAS. */
 .hud-speedo { position: relative; width: 82px; height: 48px; display: grid; place-items: center; }
@@ -215,10 +219,12 @@
 .tbtn.gas { width: 90px; height: 90px; border-color: #2fb6b2; color: var(--hud-cyan); }
 .tbtn.sprint, .tbtn.e, .tbtn.brake { width: 64px; height: 64px; }
 .tbtn.brake { width: 68px; height: 68px; }
-.tbtn.hb, .tbtn.nitro, .tbtn.aim, .tbtn.photo { width: 56px; height: 56px; }
-.tbtn.exit, .tbtn.hornradio, .tbtn.reload, .tbtn.weapon { width: 48px; height: 48px; font-size: 9px; }
-.tbtn.fire, .tbtn.snap { width: 72px; height: 72px; border-radius: 24px; }
-.tbtn.snap { width: 70px; height: 70px; border-color: #f76685; color: #fff; }
+.tbtn.hb, .tbtn.nitro, .tbtn.photo { width: 56px; height: 56px; }
+.tbtn.aim { width: 60px; height: 60px; }
+.tbtn.exit, .tbtn.hornradio { width: 48px; height: 48px; font-size: 9px; }
+.tbtn.reload, .tbtn.weapon { width: 50px; height: 50px; font-size: 9px; }
+.tbtn.fire { width: 80px; height: 80px; border-radius: 24px; }
+.tbtn.snap { width: 70px; height: 70px; border-radius: 24px; border-color: #f76685; color: #fff; }
 .tbtn.fire { border-color: #ff5c75; color: #ff8fa3; }
 .tbtn.nitro { border-color: #ff885f; color: #ffc2a0; }
 .tbtn.hornradio { border-color: #ffc247; color: #ffc247; }
@@ -293,6 +299,7 @@
 .hud[data-mode="photo"] #zone-bl,
 .hud[data-mode="photo"] #zone-bc,
 .hud[data-mode="photo"] .hud-toast,
+.hud[data-mode="photo"] .hud-damage,
 .hud[data-mode="photo"] .hint { display: none; }
 .hud[data-mode="photo"] #zone-tr > :not(#hud-exit-photo) { display: none; }
 .hud[data-mode="photo"] #hud-exit-photo { display: grid; }
