@@ -1,4 +1,20 @@
 // Everything is synthesised at runtime: no audio files, no licence issues.
+export const RADIO_STATIONS = [
+  { key: 'off', label: 'OFF', notes: [], tempo: 0, type: 'sine' },
+  {
+    key: 'sunset', label: 'SUNSET FM', notes: [261.6, 329.6, 392, 523.3, 392, 329.6],
+    tempo: 0.34, type: 'triangle',
+  },
+  {
+    key: 'pulse', label: 'NEON PULSE', notes: [220, 220, 277.2, 329.6, 440, 329.6],
+    tempo: 0.22, type: 'square',
+  },
+  {
+    key: 'docks', label: 'DOCKS BLUES', notes: [196, 233.1, 293.7, 349.2, 293.7, 233.1],
+    tempo: 0.48, type: 'sine',
+  },
+];
+
 export class GameAudio {
   constructor() {
     this.ctx = null;
@@ -12,10 +28,63 @@ export class GameAudio {
     this.rotorGain = null;
     this.rain = null;
     this.rainGain = null;
+    this.skidGain = null;
+    this.skidFilter = null;
+    this.ambientGain = null;
+    this.radioGain = null;
+    this.radioIndex = 0;
+    this.radioTime = 0;
+    this.radioStep = 0;
     this.hornCooldown = 0;
     this.nextNote = 0;
     this.step = 0;
     this.enabled = true;
+  }
+
+  get radioStation() {
+    return RADIO_STATIONS[this.radioIndex] || RADIO_STATIONS[0];
+  }
+
+  radioLabel() {
+    return `♪ ${this.radioStation.label}`;
+  }
+
+  setRadio(index) {
+    const next = ((Math.round(Number(index) || 0) % RADIO_STATIONS.length) + RADIO_STATIONS.length) % RADIO_STATIONS.length;
+    this.radioIndex = next;
+    this.radioStep = 0;
+    this.radioTime = 0;
+    if (this.radioGain && this.ctx) {
+      this.radioGain.gain.setTargetAtTime(next === 0 ? 0 : 0.7, this.ctx.currentTime, 0.12);
+    }
+    return this.radioStation;
+  }
+
+  radioNext(delta = 1) {
+    return this.setRadio(this.radioIndex + delta);
+  }
+
+  radioToggle() {
+    return this.setRadio(this.radioIndex === 0 ? 1 : 0);
+  }
+
+  radioNote(time) {
+    const station = this.radioStation;
+    if (!station.notes.length || !this.radioGain || !this.ctx) return false;
+    const freq = station.notes[this.radioStep % station.notes.length];
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = station.type;
+    o.frequency.value = freq;
+    const dur = station.tempo * 0.9;
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(0.06, time + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    o.connect(g).connect(this.radioGain);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+    this.radioStep++;
+    return true;
   }
 
   unlock() {
@@ -92,6 +161,37 @@ export class GameAudio {
     rain.start();
     this.rain = rain;
     this.rainGain = rgain;
+
+    // Tyre scrub and city wind reuse the same noise buffer — one allocation.
+    const skid = this.ctx.createBufferSource();
+    skid.buffer = buffer;
+    skid.loop = true;
+    const skidFilter = this.ctx.createBiquadFilter();
+    skidFilter.type = 'bandpass';
+    skidFilter.frequency.value = 1800;
+    const skidGain = this.ctx.createGain();
+    skidGain.gain.value = 0;
+    skid.connect(skidFilter).connect(skidGain).connect(this.master);
+    skid.start();
+    this.skidGain = skidGain;
+    this.skidFilter = skidFilter;
+
+    const ambient = this.ctx.createBufferSource();
+    ambient.buffer = buffer;
+    ambient.loop = true;
+    const ambientFilter = this.ctx.createBiquadFilter();
+    ambientFilter.type = 'lowpass';
+    ambientFilter.frequency.value = 420;
+    const ambientGain = this.ctx.createGain();
+    ambientGain.gain.value = 0;
+    ambient.connect(ambientFilter).connect(ambientGain).connect(this.master);
+    ambient.start();
+    this.ambientGain = ambientGain;
+
+    const radioGain = this.ctx.createGain();
+    radioGain.gain.value = this.radioIndex === 0 ? 0 : 0.7;
+    radioGain.connect(this.master);
+    this.radioGain = radioGain;
   }
 
   horn() {
@@ -126,11 +226,19 @@ export class GameAudio {
     o.stop(this.ctx.currentTime + dur + 0.02);
   }
 
-  update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0 }) {
+  update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0, skid = 0 }) {
     if (!this.ctx || !this.enabled) return;
     const now = this.ctx.currentTime;
     this.hornCooldown = Math.max(0, this.hornCooldown - dt);
     if (this.rainGain) this.rainGain.gain.setTargetAtTime(rain * 0.05, now, 0.4);
+    if (this.skidGain) this.skidGain.gain.setTargetAtTime(Math.min(1, Math.max(0, skid)) * 0.055, now, 0.08);
+    if (this.skidFilter) this.skidFilter.frequency.setTargetAtTime(1300 + speed * 60, now, 0.1);
+    if (this.ambientGain) {
+      this.ambientGain.gain.setTargetAtTime((driving ? 0.008 : 0.004) + Math.min(0.016, speed * 0.0005), now, 0.4);
+    }
+    if (this.radioGain && this.radioIndex > 0 && time > this.radioTime) {
+      if (this.radioNote(now)) this.radioTime = time + this.radioStation.tempo;
+    }
     const targetFreq = 45 + speed * 6.5 + throttle * 22;
     this.engine.frequency.setTargetAtTime(targetFreq, now, 0.08);
     this.engineFilter.frequency.setTargetAtTime(500 + speed * 45, now, 0.1);

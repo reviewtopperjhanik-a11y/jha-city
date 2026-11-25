@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { C } from '../look/palette.js';
+import { DEFAULT_STYLE, normalizeStyle } from '../look/wardrobe.js';
 import { angleLerp, wrapAngle } from '../util/math.js';
 
 const matCache = new Map();
@@ -20,19 +21,32 @@ export class Player {
     this.armor = Math.max(0, Math.min(100, armor || 0));
     this.vehicle = null;
     this.walkPhase = 0;
+    // Customisable materials are cloned per player so recolouring the avatar
+    // never leaks into the cached materials shared with pedestrians.
+    this.style = normalizeStyle(DEFAULT_STYLE);
     this.foot = this._buildFoot();
     this.onNotice = () => {};
+    this.onDamage = () => {};
     scene.add(this.foot);
+  }
+
+  applyStyle(style) {
+    this.style = normalizeStyle(style);
+    for (const [key, material] of Object.entries(this.styleMats)) {
+      material.color.setHex(this.style[key]);
+    }
+    return this.style;
   }
 
   _buildFoot() {
     const root = new THREE.Group();
-    const skin = toon(0xd9a06b, this.look);
-    const shirt = toon(C.coral, this.look);
-    const pants = toon(0x2a3050, this.look);
+    const skin = toon(DEFAULT_STYLE.skin, this.look).clone();
+    const shirt = toon(DEFAULT_STYLE.shirt, this.look).clone();
+    const pants = toon(DEFAULT_STYLE.pants, this.look).clone();
     const shoes = toon(0x15182a, this.look);
     const sole = toon(0xe8e3d8, this.look);
-    const hair = toon(0x2b1a12, this.look);
+    const hair = toon(DEFAULT_STYLE.hair, this.look).clone();
+    this.styleMats = { skin, shirt, pants, hair };
     const trim = toon(C.lane, this.look);
     const belt = toon(0x171a28, this.look);
     const white = new THREE.MeshBasicMaterial({ color: 0xf7f3e8 });
@@ -184,6 +198,7 @@ export class Player {
     this.armor -= absorbed;
     const toHealth = raw - absorbed;
     this.hp = Math.max(0, this.hp - toHealth);
+    this.onDamage(toHealth || raw * 0.15, absorbed > 0);
     return toHealth;
   }
 

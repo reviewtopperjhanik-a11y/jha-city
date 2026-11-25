@@ -38,6 +38,10 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Toggle day / night | N | D/N |
 | Horn | H | HORN |
 | Cycle weather | V | WX |
+| Radio station | B | RADIO |
+| Photo mode (drag, E snap, K exit) | K | PHOTO |
+| Character look | L | LOOK |
+| Gamepad | sticks / A / B / X / Y / LB / RB / Back / Start | — |
 | City map (zoom, pan, waypoint) | Tap minimap | Tap minimap |
 | Quality / FPS meter | ⚙ button | ⚙ button |
 | Bribe police ($500) | P | — |
@@ -93,12 +97,33 @@ drizzle and rain; `V` (or the WX button) switches between automatic, clear and r
 the fog, adds a synthesized rain bed, reduces grip and acceleration, and makes the minimap show
 the same city as usual.
 
+## Sound, style and presentation
+
+The audio is entirely synthesized: an engine that rises with speed, panned sirens, rotor hum,
+rain, tyre scrub and a low wind bed. **B** (or RADIO) cycles SUNSET FM, NEON PULSE, DOCKS BLUES
+and off; the chosen station is saved. Every note comes from an oscillator at runtime.
+
+**L** (or LOOK) opens the wardrobe: skin tone, jacket, hair and trousers, each with six to eight
+flat procedural colours. The look is applied to your on-foot model, saved with the slot and
+never shared with pedestrians. A standard gamepad works too: sticks steer and drive, A jumps,
+B handbrakes, X honks, Y changes station, LB brakes, RB boosts, Back opens the wardrobe and
+Start opens photo mode.
+
+The speedometer is a dial with a needle and fill ring. An edge arrow points to the current
+objective when it leaves the view, and a directional red vignette flashes from the side of an
+impact. **K** (or PHOTO) hides the HUD for free-look photography; drag to orbit, scroll to zoom,
+tap the canvas or press E to save a PNG, and K to return. Getting a photo, buying a car, changing
+your look, visiting all four landmarks, hitting 110 km/h, driving in rain or after midnight,
+finishing a job or the story, and losing a five-star chase all unlock local achievements.
+
 ## Goals
 
 - Bike, car and on-foot play from the first playable build
 - Procedural city with day/night, traffic, pedestrians and dynamic police pursuit
 - Story chain, seven job types, garage economy and three save slots
 - Traffic lights, lane-following traffic, accident crowds, landmarks and weather
+- Radio, tyre and ambient audio, character styles, photo mode, off-screen arrow, damage indicator,
+  speedometer dial, gamepad support and local achievements
 - 30 FPS target on mid-range phones (DPR cap, instancing, quality tiers)
 
 ## License

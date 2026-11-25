@@ -654,3 +654,141 @@ html, body {
   .menu-panel { max-height: 92vh; }
   .menu-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------------------------------------------------------------- Step 5 */
+.hud-radio {
+  position: absolute;
+  top: calc(182px + env(safe-area-inset-top));
+  right: 12px;
+  color: #ffc247;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+.hud-speedo { position: relative; width: 104px; height: 64px; display: grid; place-items: center; }
+.hud-speed-ring {
+  position: absolute;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: conic-gradient(from 210deg, #f76685 0 var(--speed, 0%), rgba(255, 255, 255, 0.14) var(--speed, 0%) 100%);
+  -webkit-mask: radial-gradient(circle, transparent 61%, #000 63%);
+  mask: radial-gradient(circle, transparent 61%, #000 63%);
+}
+.hud-speed-needle {
+  position: absolute;
+  bottom: 30px;
+  width: 2px;
+  height: 20px;
+  border-radius: 2px;
+  background: #ffd9a0;
+  box-shadow: 0 0 6px rgba(255, 169, 72, 0.8);
+  transform-origin: 50% 100%;
+}
+.hud-speedo .hud-speed { position: relative; font-size: 13px; padding: 3px 6px; }
+.hud-arrow {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  text-align: center;
+  filter: drop-shadow(0 0 8px rgba(255, 169, 72, 0.85));
+}
+.hud-arrow[hidden] { display: none; }
+.hud-arrow-tip {
+  width: 0;
+  height: 0;
+  margin: 0 auto;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 16px solid #ffa948;
+}
+.hud-arrow-label {
+  margin-top: 2px;
+  color: #ffd9a0;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  white-space: nowrap;
+}
+.hud-damage {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: conic-gradient(from calc(var(--dmg-angle, 0deg) + 52deg), rgba(255, 51, 85, 0.55), transparent 76deg);
+  transition: opacity 0.1s linear;
+}
+.hud-damage[hidden] { display: none; }
+.hud-photo-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  background: #fff;
+}
+.hud-photo-flash.show.ok { opacity: 0.72; }
+.hud-photo-flash.show.fail { opacity: 0.35; background: #ff3355; }
+.hud.photo-mode .hud-top,
+.hud.photo-mode .hud-bottom,
+.hud.photo-mode .hud-mission,
+.hud.photo-mode .hud-radio,
+.hud.photo-mode .hud-signal,
+.hud.photo-mode .hud-heat,
+.hud.photo-mode .hud-fps,
+.hud.photo-mode .hint,
+.hud.photo-mode .minimap-wrap,
+.hud.photo-mode .touch-left { opacity: 0; pointer-events: none; }
+.hud.photo-mode .touch-right .tbtn:not(.photo) { opacity: 0; pointer-events: none; }
+.hud.photo-mode .touch-right .tbtn.photo { border-color: #f76685; color: #fff; }
+.hud.photo-mode::after {
+  content: 'PHOTO · DRAG TO ORBIT · E SNAP · K EXIT';
+  position: absolute;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ffd9a0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+  opacity: 0.85;
+}
+.tbtn.radio { border-color: #ffc247; color: #ffc247; }
+.tbtn.photo { border-color: #8ff0e8; color: #8ff0e8; }
+.tbtn.look { border-color: #cc46a0; color: #f7a8dd; }
+.wardrobe-preview {
+  position: relative;
+  width: 96px;
+  height: 132px;
+  margin: 4px auto 12px;
+  border-radius: 14px;
+  background: radial-gradient(circle at 50% 30%, rgba(199, 70, 160, 0.28), rgba(12, 13, 27, 0.85));
+  border: 1px solid rgba(143, 240, 232, 0.32);
+}
+.wardrobe-preview div { position: absolute; left: 50%; transform: translateX(-50%); }
+.wp-head { top: 18px; width: 34px; height: 38px; border-radius: 50%; background: var(--skin); }
+.wp-hair { top: 14px; width: 38px; height: 20px; border-radius: 50% 50% 30% 30%; background: var(--hair); }
+.wp-body { top: 56px; width: 50px; height: 44px; border-radius: 10px 10px 4px 4px; background: var(--shirt); }
+.wp-legs { top: 98px; width: 40px; height: 30px; border-radius: 4px; background: var(--pants); }
+.wardrobe-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  color: #ffd9a0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.wardrobe-row button {
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 169, 72, 0.6);
+  background: rgba(12, 13, 27, 0.7);
+  color: #ffa948;
+  font-size: 15px;
+}
+@media (max-width: 620px) {
+  .hud-radio { top: calc(166px + env(safe-area-inset-top)); }
+}

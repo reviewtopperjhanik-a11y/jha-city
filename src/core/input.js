@@ -13,6 +13,9 @@ const KEY_ACTIONS = {
   KeyN: 'time',
   KeyH: 'horn',
   KeyV: 'weather',
+  KeyB: 'radio',
+  KeyK: 'photo',
+  KeyL: 'look',
 };
 
 export class Input {
@@ -20,6 +23,9 @@ export class Input {
     this.keys = {};
     this.held = {};
     this.pressed = {};
+    this.padHeld = {};
+    this.padPrev = {};
+    this.pad = null;
     this.stick = { x: 0, y: 0, active: false, id: null };
     this._build(root);
     this._bind();
@@ -47,6 +53,9 @@ export class Input {
       ['shop', 'SHOP', 'shop'],
       ['horn', 'HORN', 'horn'],
       ['weather', 'WX', 'weather'],
+      ['radio', 'RADIO', 'radio'],
+      ['photo', 'PHOTO', 'photo'],
+      ['look', 'LOOK', 'look'],
     ];
     right.innerHTML = buttons
       .map(([action, label, cls]) => `<button class="tbtn ${cls}" data-action="${action}">${label}</button>`)
@@ -127,16 +136,56 @@ export class Input {
     }
   }
 
+  // Standard gamepad mapping: sticks steer/drive, A jump, B handbrake,
+  // X horn, Y radio, LB brake, RB boost, Back look, Start photo.
+  poll() {
+    const nav = typeof window !== 'undefined' ? window.navigator : null;
+    const pads = nav?.getGamepads ? nav.getGamepads() : null;
+    const pad = pads ? Array.from(pads).find((p) => p && p.connected) : null;
+    this.pad = pad || null;
+    const next = {};
+    if (!pad) {
+      this.padHeld = next;
+      this.padPrev = next;
+      return null;
+    }
+    const buttons = {
+      0: 'jump', 1: 'hb', 2: 'horn', 3: 'radio',
+      5: 'boost', 6: 'brake', 7: 'gas', 8: 'look', 9: 'photo',
+    };
+    for (const [index, action] of Object.entries(buttons)) {
+      const btn = pad.buttons[index];
+      const on = !!(btn && (btn.pressed || btn.value > 0.5));
+      next[action] = on;
+      if (on && !this.padPrev[action]) this.pressed[action] = true;
+    }
+    this.padPrev = next;
+    this.padHeld = next;
+    return pad;
+  }
+
+  _padButton(index) {
+    const btn = this.pad?.buttons?.[index];
+    return !!(btn && (btn.pressed || btn.value > 0.5));
+  }
+
   // Movement axis: x = steering / strafe, y = forward (+1) / back (-1).
   axis() {
     if (this.stick.active) return { x: this.stick.x, y: -this.stick.y };
+    if (this.pad) {
+      const axes = this.pad.axes || [];
+      const clamp = (v) => Math.max(-1, Math.min(1, v || 0));
+      const x = clamp(axes[0]) + (this._padButton(14) ? 1 : 0) - (this._padButton(12) ? 1 : 0);
+      const y = -clamp(axes[1]) + (this._padButton(13) ? 1 : 0) - (this._padButton(15) ? 1 : 0);
+      if (Math.abs(x) > 0.12 || Math.abs(y) > 0.12) return { x: clamp(x), y: clamp(y) };
+    }
     const x = (this.keys.KeyD || this.keys.ArrowRight ? 1 : 0) - (this.keys.KeyA || this.keys.ArrowLeft ? 1 : 0);
     const y = (this.keys.KeyW || this.keys.ArrowUp ? 1 : 0) - (this.keys.KeyS || this.keys.ArrowDown ? 1 : 0);
     return { x, y };
   }
 
   isDown(action) {
-    if (this.held[action]) return true;
+    if (this.held[action] || this.padHeld[action]) return true;
     return !!this.keys[action];
   }
 

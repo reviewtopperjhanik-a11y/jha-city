@@ -17,6 +17,10 @@ import { Missions } from './systems/missions.js';
 import { Hud } from './systems/hud.js';
 import { Minimap } from './systems/minimap.js';
 import { Settings } from './systems/settings.js';
+import { Achievements } from './systems/achievements.js';
+import { PhotoMode } from './systems/photo.js';
+import { cycleStyle, randomStyle } from './look/wardrobe.js';
+import { screenMarker } from './util/screen.js';
 import { angleLerp, dist2, wrapAngle } from './util/math.js';
 
 const canvas = document.getElementById('game');
@@ -56,6 +60,13 @@ const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
 const input = new Input(ui);
 const audio = new GameAudio();
 const hud = new Hud(ui);
+const achievements = new Achievements(save, { toast: (msg) => hud.toast(msg) });
+const photo = new PhotoMode(camera, canvas, {
+  hud,
+  onCapture: (ok) => { if (ok) achievements.event('shutter'); },
+});
+audio.setRadio(save.radio || 0);
+hud.setRadio(audio.radioLabel());
 const menu = new Menu(ui, { toast: (msg) => hud.toast(msg) });
 const settings = new Settings(ui, look, save, {
   isMobile,
@@ -65,6 +76,7 @@ const settings = new Settings(ui, look, save, {
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
 const player = new Player(scene, look, save.x, save.z, save.armor);
+player.applyStyle(save.style);
 player.onNotice = (msg) => hud.toast(msg);
 const economy = new Economy(scene, look, world, {
   toast: (msg) => hud.toast(msg),
@@ -162,18 +174,36 @@ window.addEventListener('keydown', unlockAudio, { once: true });
 // Drag on the canvas (not the controls) to orbit the chase camera.
 let dragging = false;
 let lastX = 0;
+let lastY = 0;
+let dragMoved = 0;
 canvas.addEventListener('pointerdown', (e) => {
   dragging = true;
+  dragMoved = 0;
   lastX = e.clientX;
+  lastY = e.clientY;
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!dragging) return;
-  cameraYaw += (e.clientX - lastX) * 0.006;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  dragMoved += Math.hypot(dx, dy);
+  if (photo.active) photo.orbit(dx, dy);
+  else cameraYaw += dx * 0.006;
   lastX = e.clientX;
+  lastY = e.clientY;
   lookHold = 1.5;
 });
-canvas.addEventListener('pointerup', () => { dragging = false; });
+const endDrag = () => {
+  if (dragging && photo.active && dragMoved < 8 && photo.requestCapture()) hud.toast('SNAP!');
+  dragging = false;
+};
+canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', () => { dragging = false; });
+canvas.addEventListener('wheel', (e) => {
+  if (!photo.active) return;
+  e.preventDefault();
+  photo.zoom(Math.sign(e.deltaY) * 1.5);
+}, { passive: false });
 
 function resize() {
   const w = window.innerWidth;
@@ -186,6 +216,16 @@ function resize() {
 window.addEventListener('resize', resize);
 
 function handleActions() {
+  // Photo mode takes over the action buttons: E / HORN snap, K exits.
+  if (photo.active) {
+    if (input.consume('photo')) {
+      photo.exit();
+      hud.toast('PHOTO MODE OFF');
+    } else if (input.consume('e') || input.consume('horn')) {
+      if (photo.requestCapture()) hud.toast('SNAP!');
+    }
+    return;
+  }
   if (input.consume('e')) {
     if (player.vehicle) {
       if (Math.abs(player.vehicle.speed) > 8) {
@@ -229,6 +269,36 @@ function handleActions() {
     save.weather = weather.cycle();
     hud.toast(`WEATHER: ${weather.labelForTarget(weather.target)}`);
     saveGame(save, true);
+  }
+  if (input.consume('radio')) {
+    audio.radioNext();
+    save.radio = audio.radioIndex;
+    hud.setRadio(audio.radioLabel());
+    hud.toast(`RADIO: ${audio.radioStation.label}`);
+    saveGame(save, true);
+  }
+  if (input.consume('photo')) {
+    photo.enter(player, cameraYaw);
+    hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
+  }
+  if (input.consume('look')) {
+    menu.showWardrobe(
+      () => save.style,
+      (key, delta) => {
+        save.style = cycleStyle(save.style, key, delta);
+        player.applyStyle(save.style);
+        achievements.event('makeover');
+        saveGame(save, true);
+      },
+      () => {
+        save.style = randomStyle();
+        player.applyStyle(save.style);
+        achievements.event('makeover');
+        saveGame(save, true);
+      },
+      () => hud.toast('LOOK SAVED'),
+    );
+    return;
   }
   if (input.consume('bribe')) {
     if (wanted.stars > 0 && save.money >= 500) {
@@ -286,6 +356,7 @@ function handleGarage(action) {
     const descriptor = { type, color, price, upgrades: { engine: false, armor: false } };
     save.owned = save.owned || [];
     save.owned.push(descriptor);
+    achievements.event('collector');
     const v = economy.spawnVehicle(type, color, descriptor.upgrades);
     player.setVehicle(v);
     hud.toast(`${type === 'bike' ? 'BIKE' : 'COUPE'} BOUGHT — ${v.type.toUpperCase()}`);
@@ -371,6 +442,7 @@ function applySlotState(slot, state) {
   Object.assign(save, state);
   save.activeSlot = slot;
   menu.close();
+  photo.exit();
   if (player.vehicle) player.exitVehicle(world);
   wanted.clear(true);
   police.clearAll();
@@ -386,6 +458,10 @@ function applySlotState(slot, state) {
   settings.autoTier = Number.isFinite(save.autoTier) ? Math.max(0, Math.min(2, Math.round(save.autoTier))) : 1;
   settings.showFps = save.showFps !== false;
   weather.setMode(save.weather || 'auto');
+  player.applyStyle(save.style);
+  audio.setRadio(save.radio || 0);
+  hud.setRadio(audio.radioLabel());
+  achievements.unlocked = new Set(Array.isArray(save.achievements) ? save.achievements : []);
   settings._apply();
   settings._renderSlots?.();
   snapCamera();
@@ -490,6 +566,33 @@ function finishBusted() {
   saveGame(save, true);
 }
 
+function renderFrame() {
+  look.render();
+  if (photo.pendingCapture) photo.capture();
+}
+
+function threatAngle() {
+  const sources = [];
+  for (const v of police.cars) sources.push(v.pos);
+  for (const o of police.officers) sources.push(o.pos);
+  for (const v of traffic.vehicles) if (v !== player.vehicle) sources.push(v.pos);
+  let best = null;
+  let bestDist = Infinity;
+  for (const p of sources) {
+    const d = dist2(p.x, p.z, player.pos.x, player.pos.z);
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  if (!best || bestDist > 60 ** 2) return Math.random() * Math.PI * 2;
+  const dx = best.x - player.pos.x;
+  const dz = best.z - player.pos.z;
+  // Screen-right is world -x for the chase camera.
+  return Math.atan2(-dx * Math.cos(cameraYaw) + dz * Math.sin(cameraYaw), dx * Math.sin(cameraYaw) + dz * Math.cos(cameraYaw));
+}
+player.onDamage = (amount) => hud.damage(Math.min(1, amount / 18), threatAngle());
+
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
@@ -497,6 +600,8 @@ function frame(now) {
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
+  input.poll();
+  if (menu.isOpen && photo.active) photo.exit();
   lights.update(dt);
   weather.update(dt, player);
   look.setTime(currentHours());
@@ -507,7 +612,7 @@ function frame(now) {
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
     if (bustTimer <= 0) finishBusted();
-    look.render();
+    renderFrame();
     return;
   }
 
@@ -515,7 +620,7 @@ function frame(now) {
     audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0, rain: weather.level });
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
-    look.render();
+    renderFrame();
     return;
   }
 
@@ -544,15 +649,32 @@ function frame(now) {
   economy.update(dt, player);
   missions.update(dt, player);
   world.update(player.pos);
-  updateCamera(dt, world);
+  if (photo.active) photo.update(dt, player);
+  else updateCamera(dt, world);
   hud.tick(dt);
   settings.update(dt, 1 / rawDt);
 
+  achievements.noteStars(wanted.stars);
+  if (achievements.update(dt, {
+    player,
+    hours: currentHours(),
+    wanted: wanted.stars,
+    weather: weather.level,
+    missionsDone: save.missionsDone,
+    storyStep: save.storyStep,
+  })) saveGame(save, true);
+
   const driving = !!player.vehicle;
+  const driveInput = driving ? input.drivingInput() : null;
+  const skid = driveInput
+    ? (driveInput.handbrake
+      ? Math.min(1, player.speed / 16)
+      : Math.max(0, Math.abs(driveInput.steer) - 0.6) * Math.min(1, player.speed / 22))
+    : 0;
   const siren = police.audioState(player.pos, cameraYaw);
   audio.update(dt, {
     speed: player.speed,
-    throttle: driving ? input.drivingInput().throttle : 0,
+    throttle: driveInput ? driveInput.throttle : 0,
     wanted: wanted.stars,
     driving,
     time: gameTime,
@@ -560,10 +682,20 @@ function frame(now) {
     sirenPan: siren.pan,
     heli: siren.heli,
     rain: weather.level,
+    skid,
   });
 
   const target = missions.currentPoint();
-  if (target) missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
+  if (target) {
+    missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
+    if (!photo.active) {
+      const marker = screenMarker(camera, target, window.innerWidth, window.innerHeight, 82);
+      marker.label = (missions.active?.config?.name || 'OBJECTIVE').slice(0, 18);
+      hud.updateArrow(marker);
+    }
+  } else {
+    hud.updateArrow(null);
+  }
   hud.update({
     money: save.money,
     wanted: wanted.stars,
@@ -590,7 +722,7 @@ function frame(now) {
   save.armor = player.armor;
   saveGame(save);
 
-  look.render();
+  renderFrame();
 
   if (!booted) {
     booted = true;
@@ -601,4 +733,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug surface for testing in the browser console.
-window.__jha = { player, world, traffic, police, missions, wanted, economy, menu, look, save, settings, minimap, lights, weather };
+window.__jha = {
+  player, world, traffic, police, missions, wanted, economy, menu, look, save,
+  settings, minimap, lights, weather, audio, hud, input, photo, achievements,
+};

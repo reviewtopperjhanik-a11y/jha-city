@@ -1,4 +1,4 @@
-// GTA-inspired but original: sunset-first palette, never flat grey.
+// Original sunset-first palette: warm neon over cool shadows, never flat grey.
 export const C = {
   dusk: 0x4c5fca,
   orchid: 0x813dbb,

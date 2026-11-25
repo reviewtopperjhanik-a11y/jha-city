@@ -1,6 +1,8 @@
 import { PRICES } from './economy.js';
+import { STYLE_KEYS, styleLabel } from '../look/wardrobe.js';
 
 const money = (n) => `$${Math.round(n || 0)}`;
+const hex = (n) => `#${(n & 0xffffff).toString(16).padStart(6, '0')}`;
 
 export class Menu {
   constructor(root, { toast = () => {} } = {}) {
@@ -142,6 +144,41 @@ export class Menu {
       const action = e.currentTarget.dataset.action;
       this.close();
       onAction(action);
+    });
+  }
+
+  showWardrobe(getStyle, onCycle, onRandom, onDone) {
+    const style = getStyle();
+    const preview = `--skin:${hex(style.skin)};--shirt:${hex(style.shirt)};--hair:${hex(style.hair)};--pants:${hex(style.pants)}`;
+    const rows = STYLE_KEYS.map((key) => `
+      <div class="wardrobe-row">
+        <button data-style="${key}" data-delta="-1" aria-label="Previous ${key}">◀</button>
+        <span>${styleLabel(style, key)}</span>
+        <button data-style="${key}" data-delta="1" aria-label="Next ${key}">▶</button>
+      </div>`).join('');
+    this._show('YOUR LOOK', `
+      <div class="wardrobe-preview" style="${preview}">
+        <div class="wp-head"></div><div class="wp-hair"></div>
+        <div class="wp-body"></div><div class="wp-legs"></div>
+      </div>
+      ${rows}
+      <div class="menu-grid">
+        <button class="menu-item" data-random="1"><span class="menu-item-title">RANDOM OUTFIT</span></button>
+        <button class="menu-item" data-done="1"><span class="menu-item-title">DONE</span></button>
+      </div>
+      <div class="menu-note">Your look is saved with the current slot.</div>`);
+    this._on('[data-style]', 'click', (e) => {
+      const btn = e.currentTarget;
+      onCycle(btn.dataset.style, Number(btn.dataset.delta));
+      this.showWardrobe(getStyle, onCycle, onRandom, onDone);
+    });
+    this._on('[data-random]', 'click', () => {
+      onRandom();
+      this.showWardrobe(getStyle, onCycle, onRandom, onDone);
+    });
+    this._on('[data-done]', 'click', () => {
+      this.close();
+      onDone?.();
     });
   }
 

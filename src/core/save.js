@@ -17,6 +17,9 @@ const DEFAULTS = {
   armor: 0,
   storyStep: 0,
   owned: [],
+  style: { skin: 0xd9a06b, shirt: 0xf76685, hair: 0x2b1a12, pants: 0x2a3050 },
+  radio: 0,
+  achievements: [],
 };
 
 let activeSlot = 1;
