@@ -1,0 +1,9 @@
+{
+  "appId": "com.jhacity.game",
+  "appName": "JHA City",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}

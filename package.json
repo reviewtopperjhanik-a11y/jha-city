@@ -1,0 +1,23 @@
+{
+  "name": "jha-city",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JHA City - a procedural neon-sunset open world built with Three.js",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "cap:add": "cap add android",
+    "cap:sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.6.2",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/cli": "^8.6.2",
+    "vite": "^8.3.8"
+  }
+}

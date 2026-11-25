@@ -1,0 +1,16 @@
+node_modules/
+dist/
+android/
+.capacitor/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.key
+.env
+.env.*
+*.log
+.DS_Store
+.idea/
+.vscode/
