@@ -54,17 +54,41 @@ export class Vehicle {
           root.add(w);
         }
       }
+      const glassBand = new THREE.Mesh(g('carGlass', () => new THREE.BoxGeometry(2.09, 0.34, 2.54)), mat(0x17233d, this.look));
+      glassBand.position.set(0, 1.55, -0.15);
+      const roof = new THREE.Mesh(g('carRoof', () => new THREE.BoxGeometry(2.1, 0.1, 2.56)), body);
+      roof.position.set(0, 1.9, -0.15);
+      const bumperGeo = g('carBumper', () => new THREE.BoxGeometry(2.36, 0.22, 0.2));
+      const bumperF = new THREE.Mesh(bumperGeo, dark);
+      bumperF.position.set(0, 0.56, 2.28);
+      const bumperR = new THREE.Mesh(bumperGeo, dark);
+      bumperR.position.set(0, 0.56, -2.28);
       const lampGeo = g('carLamp', () => new THREE.BoxGeometry(0.55, 0.22, 0.12));
       for (const x of [-0.85, 0.85]) {
         const l = new THREE.Mesh(lampGeo, glow(0xfff1c2));
         l.position.set(x, 0.85, 2.33);
         root.add(l);
       }
-      root.add(shell, cabin);
-      shell.castShadow = cabin.castShadow = true;
+      for (const x of [-0.85, 0.85]) {
+        const t = new THREE.Mesh(g('carTail', () => new THREE.BoxGeometry(0.48, 0.18, 0.12)), glow(0xff4a5e));
+        t.position.set(x, 0.86, -2.33);
+        root.add(t);
+      }
+      const mirrorGeo = g('carMirror', () => new THREE.BoxGeometry(0.16, 0.1, 0.24));
+      for (const x of [-1.26, 1.26]) {
+        const m = new THREE.Mesh(mirrorGeo, body);
+        m.position.set(x, 1.44, 0.82);
+        root.add(m);
+      }
+      root.add(shell, cabin, glassBand, roof, bumperF, bumperR);
+      shell.castShadow = cabin.castShadow = roof.castShadow = true;
     } else {
-      const frame = new THREE.Mesh(g('bikeFrame', () => new THREE.BoxGeometry(0.55, 0.5, 1.9)), body);
-      frame.position.y = 0.85;
+      const frame = new THREE.Mesh(g('bikeFrame', () => new THREE.BoxGeometry(0.48, 0.46, 1.95)), body);
+      frame.position.y = 0.82;
+      const tank = new THREE.Mesh(g('bikeTank', () => new THREE.BoxGeometry(0.52, 0.34, 0.8)), body);
+      tank.position.set(0, 1.08, 0.18);
+      const seat = new THREE.Mesh(g('bikeSeat', () => new THREE.BoxGeometry(0.48, 0.16, 0.62)), dark);
+      seat.position.set(0, 1.02, -0.48);
       const wheelGeo = g('bikeWheel', () => new THREE.CylinderGeometry(0.56, 0.56, 0.18, 14));
       for (const z of [-0.98, 0.98]) {
         const w = new THREE.Mesh(wheelGeo, dark);
@@ -73,19 +97,66 @@ export class Vehicle {
         this.wheels.push(w);
         root.add(w);
       }
-      const bars = new THREE.Mesh(g('bikeBars', () => new THREE.BoxGeometry(1.15, 0.12, 0.14)), dark);
-      bars.position.set(0, 1.32, 0.62);
-      const rider = new THREE.Mesh(g('rider', () => new THREE.BoxGeometry(0.6, 0.95, 0.45)), mat(C.orchid, this.look));
-      rider.position.set(0, 1.45, -0.15);
-      rider.rotation.x = -0.35;
-      const head = new THREE.Mesh(g('head', () => new THREE.SphereGeometry(0.28, 10, 8)), mat(C.sand, this.look));
-      head.position.set(0, 2.1, -0.05);
-      const lamp = new THREE.Mesh(g('bikeLamp', () => new THREE.SphereGeometry(0.22, 10, 8)), glow(0xfff1c2));
-      lamp.position.set(0, 0.95, 1.02);
-      root.add(frame, bars, rider, head, lamp);
-      frame.castShadow = rider.castShadow = true;
+      const bars = new THREE.Mesh(g('bikeBars', () => new THREE.BoxGeometry(1.15, 0.1, 0.12)), dark);
+      bars.position.set(0, 1.36, 0.64);
+      const lamp = new THREE.Mesh(g('bikeLamp', () => new THREE.SphereGeometry(0.2, 10, 8)), glow(0xfff1c2));
+      lamp.position.set(0, 0.95, 1.04);
+      root.add(frame, tank, seat, bars, lamp);
+
+      // Detailed seated rider: head, hair, eyes, hands, bent legs, shoes.
+      const skin = mat(0xd9a06b, this.look);
+      const hair = mat(0x2b1a12, this.look);
+      const jacket = mat(C.orchid, this.look);
+      const pants = mat(0x2a3050, this.look);
+      const shoes = mat(0x15182a, this.look);
+      const eye = new THREE.MeshBasicMaterial({ color: 0x0c0d1b });
+      const part = (mesh, x, y, z, rx = 0, ry = 0, rz = 0) => {
+        mesh.position.set(x, y, z);
+        mesh.rotation.set(rx, ry, rz);
+        mesh.castShadow = true;
+        root.add(mesh);
+        return mesh;
+      };
+      part(new THREE.Mesh(g('riderHips', () => new THREE.BoxGeometry(0.5, 0.3, 0.36)), pants), 0, 1.18, -0.28);
+      part(new THREE.Mesh(g('riderTorso', () => new THREE.BoxGeometry(0.56, 0.76, 0.38)), jacket), 0, 1.58, -0.18, -0.22);
+      const head = part(new THREE.Mesh(g('riderHead', () => new THREE.SphereGeometry(0.26, 12, 10)), skin), 0, 2.1, 0.02);
+      part(new THREE.Mesh(g('riderHair', () => new THREE.SphereGeometry(0.272, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2)), hair), 0, 2.12, 0.0);
+      part(new THREE.Mesh(g('riderEye', () => new THREE.SphereGeometry(0.032, 6, 4)), eye), -0.09, 2.14, 0.245);
+      part(new THREE.Mesh(g('riderEye', () => new THREE.SphereGeometry(0.032, 6, 4)), eye), 0.09, 2.14, 0.245);
+      part(new THREE.Mesh(g('riderNose', () => new THREE.BoxGeometry(0.06, 0.07, 0.08)), skin), 0, 2.05, 0.27);
+      // Arms reaching the handlebars.
+      for (const s of [-1, 1]) {
+        part(new THREE.Mesh(g('riderArm', () => new THREE.BoxGeometry(0.14, 0.72, 0.16)), jacket), s * 0.31, 1.6, 0.0, 0.55);
+        part(new THREE.Mesh(g('riderHand', () => new THREE.SphereGeometry(0.09, 8, 6)), skin), s * 0.31, 1.33, 0.56);
+        // Bent legs on the pegs.
+        part(new THREE.Mesh(g('riderThigh', () => new THREE.BoxGeometry(0.22, 0.62, 0.24)), pants), s * 0.21, 1.03, 0.02, 1.0);
+        part(new THREE.Mesh(g('riderShin', () => new THREE.BoxGeometry(0.18, 0.55, 0.2)), pants), s * 0.24, 0.72, 0.3, -0.35);
+        part(new THREE.Mesh(g('riderShoe', () => new THREE.BoxGeometry(0.22, 0.14, 0.36)), shoes), s * 0.24, 0.52, 0.48);
+      }
+      void head;
     }
     return root;
+  }
+
+  setPolice() {
+    if (this.policeLights) return;
+    const barRed = new THREE.Mesh(
+      g('policeRed', () => new THREE.BoxGeometry(0.5, 0.16, 0.24)),
+      new THREE.MeshBasicMaterial({ color: 0xff2b4d, toneMapped: false }),
+    );
+    barRed.position.set(-0.28, 1.98, -0.18);
+    const barBlue = new THREE.Mesh(
+      g('policeBlue', () => new THREE.BoxGeometry(0.5, 0.16, 0.24)),
+      new THREE.MeshBasicMaterial({ color: 0x3a7bff, toneMapped: false }),
+    );
+    barBlue.position.set(0.28, 1.98, -0.18);
+    const barBase = new THREE.Mesh(
+      g('policeBar', () => new THREE.BoxGeometry(1.3, 0.08, 0.34)),
+      new THREE.MeshBasicMaterial({ color: 0x141827 }),
+    );
+    barBase.position.set(0, 1.9, -0.18);
+    this.mesh.add(barBase, barRed, barBlue);
+    this.policeLights = [barRed, barBlue];
   }
 
   get maxSpeed() {

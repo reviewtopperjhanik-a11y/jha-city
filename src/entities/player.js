@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { C } from '../look/palette.js';
-import { clamp, damp } from '../util/math.js';
+import { damp } from '../util/math.js';
 
 const matCache = new Map();
 const toon = (color, look) => {
@@ -25,24 +25,100 @@ export class Player {
 
   _buildFoot() {
     const root = new THREE.Group();
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.0, 0.42), toon(C.coral, this.look));
-    torso.position.y = 1.25;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), toon(C.sand, this.look));
-    head.position.y = 1.98;
-    this.legs = [];
-    this.arms = [];
+    const skin = toon(0xd9a06b, this.look);
+    const shirt = toon(C.coral, this.look);
+    const pants = toon(0x2a3050, this.look);
+    const shoes = toon(0x15182a, this.look);
+    const sole = toon(0xe8e3d8, this.look);
+    const hair = toon(0x2b1a12, this.look);
+    const trim = toon(C.lane, this.look);
+    const belt = toon(0x171a28, this.look);
+    const white = new THREE.MeshBasicMaterial({ color: 0xf7f3e8 });
+    const eye = new THREE.MeshBasicMaterial({ color: 0x10111c });
+    const add = (mesh, x, y, z) => {
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      root.add(mesh);
+      return mesh;
+    };
+
+    // Hips, belt and a shaped torso so the silhouette is not a single box.
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.28, 0.36), pants), 0, 1.02, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.09, 0.39), belt), 0, 1.18, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.76, 0.4), shirt), 0, 1.56, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.18, 0.38), shirt), 0, 1.86, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.42), shirt), 0, 1.9, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.62, 0.025), trim), 0, 1.56, 0.213);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.03), trim), 0, 1.8, 0.213);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.08, 0.42), shirt), 0, 1.21, 0);
+
+    // Neck and head.
+    add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.16, 8), skin), 0, 1.98, 0);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.255, 14, 12), skin), 0, 2.16, 0);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.268, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), hair), 0, 2.17, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.26, 0.15), hair), 0, 2.11, -0.19);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.1), hair), -0.09, 2.34, 0.19);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.1), hair), 0.1, 2.33, 0.18);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.19, 0.07), hair), -0.248, 2.1, -0.04);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.19, 0.07), hair), 0.248, 2.1, -0.04);
     for (const s of [-1, 1]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.85, 0.24), toon(C.ink, this.look));
-      leg.position.set(s * 0.18, 0.45, 0);
+      add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), skin), s * 0.26, 2.15, 0);
+      add(new THREE.Mesh(new THREE.SphereGeometry(0.046, 8, 6), white), s * 0.095, 2.19, 0.226);
+      add(new THREE.Mesh(new THREE.SphereGeometry(0.024, 6, 4), eye), s * 0.095, 2.19, 0.262);
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.026, 0.035), hair), s * 0.095, 2.245, 0.24);
+    }
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.1, 0.1), skin), 0, 2.12, 0.255);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.022, 0.02), new THREE.MeshBasicMaterial({ color: 0x9a4d4d })), 0, 2.075, 0.252);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), skin), 0, 2.02, 0.18);
+
+    this.legs = [];
+    this.knees = [];
+    this.arms = [];
+    this.elbows = [];
+    for (const s of [-1, 1]) {
+      const leg = new THREE.Group();
+      leg.position.set(s * 0.16, 1.0, 0);
+      const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.42, 0.24), pants);
+      thigh.position.y = -0.21;
+      thigh.castShadow = true;
+      const knee = new THREE.Group();
+      knee.position.y = -0.44;
+      const shin = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.4, 0.21), pants);
+      shin.position.y = -0.2;
+      shin.castShadow = true;
+      const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.13, 0.36), shoes);
+      shoe.position.set(0, -0.43, 0.06);
+      shoe.castShadow = true;
+      const shoeSole = new THREE.Mesh(new THREE.BoxGeometry(0.235, 0.045, 0.39), sole);
+      shoeSole.position.set(0, -0.5, 0.065);
+      shoeSole.castShadow = true;
+      knee.add(shin, shoe, shoeSole);
+      leg.add(thigh, knee);
       this.legs.push(leg);
+      this.knees.push(knee);
       root.add(leg);
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.82, 0.19), toon(C.orchid, this.look));
-      arm.position.set(s * 0.44, 1.28, 0);
+
+      const arm = new THREE.Group();
+      arm.position.set(s * 0.41, 1.84, 0);
+      const upper = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.38, 0.18), shirt);
+      upper.position.y = -0.19;
+      upper.castShadow = true;
+      const cuff = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.05, 0.19), trim);
+      cuff.position.y = -0.39;
+      const elbow = new THREE.Group();
+      elbow.position.y = -0.4;
+      const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.34, 0.15), skin);
+      forearm.position.y = -0.17;
+      forearm.castShadow = true;
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6), skin);
+      hand.position.y = -0.38;
+      hand.castShadow = true;
+      elbow.add(forearm, hand);
+      arm.add(upper, cuff, elbow);
       this.arms.push(arm);
+      this.elbows.push(elbow);
       root.add(arm);
     }
-    torso.castShadow = true;
-    root.add(torso, head);
     return root;
   }
 
@@ -123,14 +199,20 @@ export class Player {
       }
     }
     this.walkPhase += dt * (moving ? (sprint ? 15 : 10) : 0);
-    const swing = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
+    const swing = moving ? Math.sin(this.walkPhase) * 0.58 : 0;
     this.legs[0].rotation.x = swing;
     this.legs[1].rotation.x = -swing;
-    this.arms[0].rotation.x = -swing * 0.7;
-    this.arms[1].rotation.x = swing * 0.7;
+    this.knees[0].rotation.x = Math.max(0, -swing) * 0.9;
+    this.knees[1].rotation.x = Math.max(0, swing) * 0.9;
+    this.arms[0].rotation.x = -swing * 0.75;
+    this.arms[1].rotation.x = swing * 0.75;
+    this.elbows[0].rotation.x = -Math.max(0, swing) * 0.35;
+    this.elbows[1].rotation.x = -Math.max(0, -swing) * 0.35;
 
     this.foot.position.copy(this.pos);
+    if (moving && this.onGround) this.foot.position.y += Math.abs(Math.sin(this.walkPhase)) * 0.035;
     this.foot.rotation.y = this.heading;
+    this.foot.rotation.z = moving ? Math.sin(this.walkPhase * 0.5) * 0.015 : 0;
     this.foot.visible = true;
   }
 }
