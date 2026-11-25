@@ -1,5 +1,5 @@
 import { clamp } from '../util/math.js';
-import { saveGame } from '../core/save.js';
+import { saveGame, saveSlot, listSlots, loadSlot, currentSlot } from '../core/save.js';
 
 // Each tier trades pixel density, bloom and shadows to hold a playable frame rate.
 const TIERS = [
@@ -10,10 +10,12 @@ const TIERS = [
 const MODES = ['auto', 'high', 'medium', 'low'];
 
 export class Settings {
-  constructor(root, look, save, { isMobile = false, toast = () => {} } = {}) {
+  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {} } = {}) {
     this.look = look;
     this.save = save;
     this.toast = toast;
+    this.onSaveSlot = onSaveSlot;
+    this.onLoadSlot = onLoadSlot;
     this.mode = MODES.includes(save.quality) ? save.quality : 'auto';
     const fallbackTier = isMobile ? 1 : 0;
     this.autoTier = clamp(Number.isFinite(save.autoTier) ? Math.round(save.autoTier) : fallbackTier, 0, 2);
@@ -46,12 +48,15 @@ export class Settings {
         <button class="settings-toggle" id="fps-toggle">FPS METER: ON</button>
         <div class="settings-stat" id="settings-stat">60 FPS · AUTO · MEDIUM</div>
         <div class="settings-tip">Settings are saved automatically.</div>
+        <div class="settings-label" style="padding-top:10px">SAVE SLOTS</div>
+        <div class="slot-row" id="slot-row"></div>
       </div>`;
     root.append(this.overlay);
 
     this.gear = root.querySelector('#hud-settings');
     this.fpsEl = root.querySelector('#hud-fps');
     this.stat = this.overlay.querySelector('#settings-stat');
+    this.slotRow = this.overlay.querySelector('#slot-row');
     this.fpsToggle = this.overlay.querySelector('#fps-toggle');
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
@@ -70,9 +75,42 @@ export class Settings {
       this.showFps = !this.showFps;
       this._apply();
     });
+    this._renderSlots();
 
     this._apply();
     this._renderFps();
+  }
+
+  _renderSlots() {
+    if (!this.slotRow) return;
+    const active = currentSlot();
+    const slots = listSlots();
+    this.slotRow.innerHTML = slots.map((s) => `
+      <div class="slot-item ${s.index === active ? 'active' : ''}">
+        <span>S${s.index}<small>${s.exists ? `$${s.money} · ${s.storyStep}/4` : 'EMPTY'}</small></span>
+        <button data-slot="save-${s.index}">SAVE</button>
+        <button data-slot="load-${s.index}">LOAD</button>
+      </div>`).join('');
+    for (const btn of this.slotRow.querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        const [action, index] = btn.dataset.slot.split('-');
+        const slot = Number(index);
+        if (action === 'save') {
+          saveSlot(slot, this.save);
+          this.toast(`SLOT ${slot} SAVED`);
+          this._renderSlots();
+        } else {
+          const found = listSlots().find((s) => s.index === slot);
+          if (!found?.exists) {
+            this.toast(`SLOT ${slot} IS EMPTY`);
+            return;
+          }
+          const state = loadSlot(slot);
+          this.onLoadSlot(slot, state);
+          this._renderSlots();
+        }
+      });
+    }
   }
 
   _preset() {
@@ -130,6 +168,7 @@ export class Settings {
     this.isOpen = true;
     this.overlay.classList.add('open');
     this.overlay.setAttribute('aria-hidden', 'false');
+    this._renderSlots();
     this._renderFps();
   }
 

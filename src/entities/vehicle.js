@@ -23,8 +23,10 @@ export class Vehicle {
     this.heading = heading;
     this.speed = 0;
     this.color = color;
+    this.baseColor = color;
     this.health = 100;
     this.boost = 100;
+    this.upgrades = { engine: false, armor: false };
     this.ai = false;
     this.role = 'parked';
     this.stuckTime = 0;
@@ -32,6 +34,7 @@ export class Vehicle {
     this.blocked = false;
     this.aiInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.mesh = this._build();
+    this.bodyMaterial = mat(color, this.look);
     this.scene.add(this.mesh);
     this._sync(0, 0);
   }
@@ -190,15 +193,38 @@ export class Vehicle {
     this.policeLights = [barRed, barBlue];
   }
 
+  get maxHealth() {
+    return this.upgrades.armor ? 160 : 100;
+  }
+
   get maxSpeed() {
-    return this.type === 'bike' ? 38 : 31;
+    const base = this.type === 'bike' ? 38 : 31;
+    return base * (this.upgrades.engine ? 1.18 : 1);
+  }
+
+  setColor(color) {
+    if (color === this.color) return;
+    const next = mat(color, this.look);
+    for (const child of this.mesh.children) {
+      if (child.material === this.bodyMaterial) child.material = next;
+    }
+    this.bodyMaterial = next;
+    this.color = color;
+    this.baseColor = color;
+  }
+
+  applyUpgrades(flags = {}) {
+    this.upgrades.engine = !!flags.engine;
+    this.upgrades.armor = !!flags.armor;
+    this.health = Math.min(this.maxHealth, Math.max(this.health, this.maxHealth));
+    if (flags.color != null) this.setColor(flags.color);
   }
 
   applyInput(dt, input, world) {
     this.blocked = false;
     const boosting = input.boost && this.boost > 1;
     const max = this.maxSpeed * (boosting ? 1.35 : 1);
-    const accel = (boosting ? 30 : 17) * (input.throttle || 0);
+    const accel = (boosting ? 30 : 17) * (this.upgrades.engine ? 1.18 : 1) * (input.throttle || 0);
     const braking = (input.brake || 0) * 25;
 
     this.speed += accel * dt;
@@ -229,7 +255,10 @@ export class Vehicle {
       }
       const impact = Math.abs(this.speed);
       this.speed *= 0.55;
-      if (impact > 5) this.health = Math.max(0, this.health - impact * 0.055);
+      if (impact > 5) {
+        const resistance = this.upgrades.armor ? 0.55 : 1;
+        this.health = Math.max(0, this.health - impact * 0.055 * resistance);
+      }
     } else {
       this.pos.x = nx;
       this.pos.z = nz;

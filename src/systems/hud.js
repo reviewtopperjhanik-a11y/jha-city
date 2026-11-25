@@ -14,6 +14,7 @@ export class Hud {
       <div class="hud-card hud-mission" id="hud-mission">No active job</div>
       <div class="hud-bottom">
         <div class="hud-card" id="hud-health">HP 100</div>
+        <div class="hud-card" id="hud-armor">ARMOR 0</div>
         <div class="hud-card hud-speed" id="hud-speed">0 <small>KM/H</small></div>
         <div class="hud-card" id="hud-mode">ON FOOT</div>
       </div>
@@ -25,7 +26,7 @@ export class Hud {
           <div class="busted-sub" id="hud-busted-sub"></div>
         </div>
       </div>
-      <div class="hint">WASD / stick · W GAS · S BRAKE · SPACE DRIFT/JUMP · SHIFT BOOST · E ENTER/EXIT · M DELIVERY · R RACE · T TAXI · N DAY/NIGHT · P BRIBE · TAP MAP · ⚙ QUALITY</div>
+      <div class="hint">WASD / stick · GAS · BRAKE · DRIFT · BOOST · E ENTER/EXIT · J JOBS · G SHOP · N DAY/NIGHT · P BRIBE · TAP MAP · ⚙ QUALITY</div>
     `;
     root.append(el);
     this.money = el.querySelector('#hud-money');
@@ -33,6 +34,7 @@ export class Hud {
     this.clock = el.querySelector('#hud-clock');
     this.mission = el.querySelector('#hud-mission');
     this.health = el.querySelector('#hud-health');
+    this.armor = el.querySelector('#hud-armor');
     this.speed = el.querySelector('#hud-speed');
     this.mode = el.querySelector('#hud-mode');
     this.heat = el.querySelector('#hud-heat');
@@ -75,6 +77,7 @@ export class Hud {
     this.clock.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     this.mission.textContent = s.mission;
     this.health.textContent = `HP ${Math.round(s.hp)}`;
+    this.armor.textContent = `ARMOR ${Math.round(s.armor || 0)}`;
     this.speed.innerHTML = `${Math.round(s.speed * 3.6)} <small>KM/H</small>`;
     this.mode.textContent = s.mode.toUpperCase();
 

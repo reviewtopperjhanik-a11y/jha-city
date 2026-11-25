@@ -169,7 +169,7 @@ export class Traffic {
   }
 
   get enterables() {
-    return this.vehicles.filter((v) => v.role !== 'police' && v.role !== 'wrecked');
+    return this.vehicles.filter((v) => !['police', 'wrecked', 'suspect'].includes(v.role));
   }
 
   nearestVehicle(pos) {
@@ -329,7 +329,7 @@ export class Traffic {
     this.crimeGrace = Math.max(0, this.crimeGrace - dt);
     for (const v of this.vehicles) {
       if (v === player.vehicle) continue;
-      if (v.role === 'police') continue;
+      if (v.role === 'police' || v.role === 'suspect') continue;
       if (v.ai) {
         const d = dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z);
         if (d < 10 && Math.abs(v.speed - player.speed) > 5) v.targetSpeed = 3;

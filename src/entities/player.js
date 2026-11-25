@@ -9,7 +9,7 @@ const toon = (color, look) => {
 };
 
 export class Player {
-  constructor(scene, look, x, z) {
+  constructor(scene, look, x, z, armor = 0) {
     this.scene = scene;
     this.look = look;
     this.pos = new THREE.Vector3(x, 0, z);
@@ -17,6 +17,7 @@ export class Player {
     this.vy = 0;
     this.onGround = true;
     this.hp = 100;
+    this.armor = Math.max(0, Math.min(100, armor || 0));
     this.vehicle = null;
     this.walkPhase = 0;
     this.foot = this._buildFoot();
@@ -174,6 +175,26 @@ export class Player {
     this.foot.position.copy(this.pos);
     this.foot.rotation.set(0, this.heading, 0);
     return v;
+  }
+
+  damage(amount) {
+    const raw = Math.max(0, amount || 0);
+    if (raw <= 0) return 0;
+    const absorbed = Math.min(this.armor, raw);
+    this.armor -= absorbed;
+    const toHealth = raw - absorbed;
+    this.hp = Math.max(0, this.hp - toHealth);
+    return toHealth;
+  }
+
+  heal(amount = 35) {
+    this.hp = Math.min(100, this.hp + amount);
+    return this.hp;
+  }
+
+  addArmor(amount = 35) {
+    this.armor = Math.min(100, this.armor + amount);
+    return this.armor;
   }
 
   respawnAt(x, z, heading = 0) {

@@ -4,9 +4,11 @@ import { createLook } from './look/look.js';
 import { createCity } from './world/city.js';
 import { Input } from './core/input.js';
 import { GameAudio } from './core/audio.js';
-import { loadSave, saveGame } from './core/save.js';
+import { loadSave, saveGame, saveSlot, loadSlot, listSlots, currentSlot } from './core/save.js';
 import { Player } from './entities/player.js';
 import { Traffic } from './systems/traffic.js';
+import { Menu } from './systems/menu.js';
+import { Economy, PRICES, PAINT_COLORS } from './systems/economy.js';
 import { Police } from './systems/police.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
@@ -45,16 +47,36 @@ look.resize(window.innerWidth, window.innerHeight);
 
 const world = createCity(scene, look);
 const save = loadSave();
+save.activeSlot = currentSlot();
 let sessionStartHours = save.hours;
 // ~6 min of day followed by ~5 min of night, then repeat.
 const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
 const input = new Input(ui);
 const audio = new GameAudio();
 const hud = new Hud(ui);
-const settings = new Settings(ui, look, save, { isMobile, toast: (msg) => hud.toast(msg) });
+const menu = new Menu(ui, { toast: (msg) => hud.toast(msg) });
+const settings = new Settings(ui, look, save, {
+  isMobile,
+  toast: (msg) => hud.toast(msg),
+  onSaveSlot: (slot) => { save.activeSlot = slot; menu.close(); },
+  onLoadSlot: (slot, state) => applySlotState(slot, state),
+});
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
-const player = new Player(scene, look, save.x, save.z);
+const player = new Player(scene, look, save.x, save.z, save.armor);
 player.onNotice = (msg) => hud.toast(msg);
+const economy = new Economy(scene, look, world, {
+  toast: (msg) => hud.toast(msg),
+  pickup: (kind, amount) => {
+    if (kind === 'health') {
+      player.heal(amount);
+      hud.toast(`+${amount} HP`);
+    } else {
+      player.addArmor(amount);
+      hud.toast(`+${amount} ARMOR`);
+    }
+    audio.blip(660, 0.12, 'sine', 0.07);
+  },
+});
 
 const wanted = new Wanted();
 const police = new Police(scene, look, world, {
@@ -73,7 +95,13 @@ const missions = new Missions(scene, world, {
     save.missionsDone += 1;
   },
   toast: (msg) => hud.toast(msg),
-});
+  dialog: (speaker, lines, done) => menu.showDialog(speaker, lines, done),
+  story: (step) => {
+    save.storyStep = step;
+    saveGame(save, true);
+  },
+  storyStep: save.storyStep,
+}, look, traffic);
 
 wanted.onChange = (stars, before) => {
   if (stars === 0) hud.toast('YOU LOST THEM');
@@ -166,6 +194,20 @@ function handleActions() {
   if (input.consume('mission')) missions.start('delivery', player);
   if (input.consume('race')) missions.start('race', player);
   if (input.consume('taxi')) missions.start('taxi', player);
+  if (input.consume('jobs')) {
+    menu.showJobs(
+      missions,
+      (type) => missions.start(type, player),
+      () => missions.startStory(player),
+    );
+    return;
+  }
+  if (input.consume('shop')) {
+    const loc = economy.nearest(player.pos);
+    if (loc) openBusinessMenu(loc);
+    else hud.toast('NO BUSINESS NEARBY — SEE THE MAP');
+    return;
+  }
   if (input.consume('bribe')) {
     if (wanted.stars > 0 && save.money >= 500) {
       save.money -= 500;
@@ -187,6 +229,145 @@ function handleActions() {
     gameTime = 0;
     hud.toast(night ? 'NIGHT MODE' : 'DAY MODE');
   }
+}
+
+function spend(cost) {
+  if (save.money < cost) {
+    hud.toast('NOT ENOUGH CASH');
+    return false;
+  }
+  save.money -= cost;
+  return true;
+}
+
+function ownedDescriptor(v) {
+  return (save.owned || []).find((d) => d.type === v.type && d.color === v.color) || null;
+}
+
+function rememberVehicle(v) {
+  const d = ownedDescriptor(v);
+  if (d) d.upgrades = { ...v.upgrades, color: v.color };
+}
+
+function openBusinessMenu(loc) {
+  if (loc.key === 'garage') menu.showGarage(save, save.owned || [], handleGarage);
+  else if (loc.key === 'shop') menu.showShop(save, handleShop);
+  else menu.showSafehouse({ ...save, hp: player.hp, armor: player.armor, activeSlot: currentSlot() }, listSlots(), handleSafehouse);
+}
+
+function handleGarage(action) {
+  if (action === 'buy-bike' || action === 'buy-car') {
+    const type = action === 'buy-bike' ? 'bike' : 'car';
+    const price = PRICES[type];
+    if (!spend(price)) return;
+    const color = PAINT_COLORS[type === 'bike' ? 0 : 1];
+    const descriptor = { type, color, price, upgrades: { engine: false, armor: false } };
+    save.owned = save.owned || [];
+    save.owned.push(descriptor);
+    const v = economy.spawnVehicle(type, color, descriptor.upgrades);
+    player.setVehicle(v);
+    hud.toast(`${type === 'bike' ? 'BIKE' : 'COUPE'} BOUGHT — ${v.type.toUpperCase()}`);
+    saveGame(save, true);
+    return;
+  }
+  if (action === 'drive') {
+    const descriptor = (save.owned || []).slice(-1)[0];
+    if (!descriptor) {
+      hud.toast('BUY A VEHICLE FIRST');
+      return;
+    }
+    if (player.vehicle) player.exitVehicle(world);
+    economy.restore([descriptor]);
+    player.setVehicle(economy.ownedVehicles[0]);
+    hud.toast('OWNED VEHICLE READY');
+    saveGame(save, true);
+    return;
+  }
+  const v = player.vehicle;
+  if (!v || v.role === 'police') {
+    hud.toast('DRIVE YOUR OWN VEHICLE FIRST');
+    return;
+  }
+  if (action === 'paint') {
+    if (!spend(PRICES.paint)) return;
+    v.setColor(economy.nextPaint(v.color));
+    rememberVehicle(v);
+    hud.toast('FRESH PAINT');
+  } else {
+    const key = action === 'engine' ? 'engine' : 'armor';
+    if (v.upgrades[key]) {
+      hud.toast('ALREADY INSTALLED');
+      return;
+    }
+    if (!spend(PRICES[key])) return;
+    v.applyUpgrades({ ...v.upgrades, [key]: true });
+    rememberVehicle(v);
+    hud.toast(key === 'engine' ? 'ENGINE TUNED' : 'BODY REINFORCED');
+  }
+  saveGame(save, true);
+}
+
+function handleShop(action) {
+  if (action === 'health') {
+    if (!spend(PRICES.health)) return;
+    player.heal(35);
+    hud.toast('+35 HP');
+  } else {
+    if (!spend(PRICES.armor)) return;
+    player.addArmor(40);
+    hud.toast('+40 ARMOR');
+  }
+  audio.blip(660, 0.12, 'sine', 0.07);
+  saveGame(save, true);
+}
+
+function handleSafehouse(action) {
+  if (action === 'rest') {
+    player.hp = 100;
+    player.armor = Math.min(100, player.armor + 15);
+    hud.toast('RESTED — FULL HEALTH');
+  } else if (action.startsWith('save-')) {
+    const slot = Number(action.slice(5));
+    saveSlot(slot, { ...save, hp: player.hp, armor: player.armor });
+    save.activeSlot = slot;
+    settings._renderSlots?.();
+    hud.toast(`SLOT ${slot} SAVED`);
+  } else if (action.startsWith('load-')) {
+    const slot = Number(action.slice(5));
+    const state = loadSlot(slot);
+    if (!state) {
+      hud.toast('SLOT IS EMPTY');
+      return;
+    }
+    applySlotState(slot, state);
+    return;
+  }
+  saveGame(save, true);
+}
+
+function applySlotState(slot, state) {
+  Object.assign(save, state);
+  save.activeSlot = slot;
+  menu.close();
+  if (player.vehicle) player.exitVehicle(world);
+  wanted.clear(true);
+  police.clearAll();
+  economy.restore(save.owned || []);
+  player.hp = 100;
+  player.armor = save.armor || 0;
+  const spawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
+  player.respawnAt(spawn.x, spawn.z, 0);
+  sessionStartHours = save.hours || 8;
+  gameTime = 0;
+  missions.storyStep = save.storyStep || 0;
+  settings.mode = ['auto', 'high', 'medium', 'low'].includes(save.quality) ? save.quality : 'auto';
+  settings.autoTier = Number.isFinite(save.autoTier) ? Math.max(0, Math.min(2, Math.round(save.autoTier))) : 1;
+  settings.showFps = save.showFps !== false;
+  settings._apply();
+  settings._renderSlots?.();
+  snapCamera();
+  hud.toast(`SLOT ${slot} LOADED`);
+  saveGame(save, true, slot);
 }
 
 function updateCamera(dt, world) {
@@ -241,6 +422,7 @@ function respawn() {
   police.clearAll();
   const spawn = world.nearestRoad(0, 65);
   player.respawnAt(spawn.x, spawn.z, 0);
+  player.armor = Math.floor(player.armor / 2);
   save.x = spawn.x;
   save.z = spawn.z;
   snapCamera();
@@ -253,6 +435,7 @@ let bustRelease = null;
 
 function beginBusted() {
   if (busted) return;
+  menu.close();
   busted = true;
   bustTimer = 3.6;
   bustRelease = 'DOWNTOWN PRECINCT';
@@ -303,10 +486,25 @@ function frame(now) {
     return;
   }
 
+  if (menu.isOpen) {
+    look.setTime(currentHours());
+    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0 });
+    hud.tick(dt);
+    settings.update(dt, 1 / rawDt);
+    look.render();
+    return;
+  }
+
   handleActions();
   look.setTime(currentHours());
+  const healthBefore = player.vehicle ? player.vehicle.health : 0;
   player.update(dt, input, world, cameraYaw);
 
+  if (player.vehicle && player.vehicle.health < healthBefore - 0.4) {
+    const impact = (healthBefore - player.vehicle.health) * 0.3;
+    player.damage(impact);
+    if (impact > 1.5) audio.blip(110, 0.16, 'sawtooth', 0.06);
+  }
   if (player.hp <= 0) respawn();
   if (player.vehicle && player.vehicle.health <= 0) {
     const wreck = player.vehicle;
@@ -320,6 +518,7 @@ function frame(now) {
   traffic.update(dt, player, wanted.stars);
   police.update(dt, player, wanted, gameTime);
   wanted.update(dt, player, police, gameTime);
+  economy.update(dt, player);
   missions.update(dt, player);
   world.update(player.pos);
   updateCamera(dt, world);
@@ -339,25 +538,25 @@ function frame(now) {
     heli: siren.heli,
   });
 
-  if (missions.active) {
-    const p = missions.active.points[missions.active.index];
-    missions.setDistance(dist2(player.pos.x, player.pos.z, p.x, p.z));
-  }
+  const target = missions.currentPoint();
+  if (target) missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
   hud.update({
     money: save.money,
     wanted: wanted.stars,
     hours: currentHours(),
     mission: missions.status(),
     hp: player.hp,
+    armor: player.armor,
     speed: player.speed,
     mode: player.mode,
     heat: wanted.hudState(),
   });
-  if (++frameCount % 3 === 0) minimap.update(player, world, missions, police, wanted);
+  if (++frameCount % 3 === 0) minimap.update(player, world, missions, police, wanted, economy);
 
   save.x = player.pos.x;
   save.z = player.pos.z;
   save.hours = currentHours();
+  save.armor = player.armor;
   saveGame(save);
 
   look.render();
@@ -371,4 +570,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug surface for testing in the browser console.
-window.__jha = { player, world, traffic, police, missions, wanted, look, save, settings, minimap };
+window.__jha = { player, world, traffic, police, missions, wanted, economy, menu, look, save, settings, minimap };

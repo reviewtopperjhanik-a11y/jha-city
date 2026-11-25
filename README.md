@@ -30,6 +30,8 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Handbrake (drift) | Space | HB |
 | Boost | Shift | BOOST |
 | Enter / exit vehicle | E | E |
+| Job board / story | J | JOBS |
+| Garage / shop / safehouse | G nearby | SHOP nearby |
 | Jump (on foot) | Space | JUMP |
 | Sprint (on foot) | Shift | BOOST |
 | Camera | C | CAM |
@@ -58,11 +60,29 @@ Getting caught shows a **BUSTED** screen, deducts a fine based on your stars and
 at the downtown precinct. Sirens are distance-based and pan with the nearest cruiser; the
 helicopter adds a low rotor hum.
 
+## Jobs, story and economy
+
+Press **J** (or the JOBS touch button) for the job board. A four-chapter story chain plays short
+radio dialog before each chapter. Side jobs are delivery, street race, taxi, courier, VIP drive,
+suspect chase and time trial. Courier and time trial add time bonuses; VIP runs fail if you speed
+or wreck the car; the chase spawns a fleeing suspect that you must catch. Damage reduces payouts.
+
+The map marks three businesses:
+
+- **Garage** — buy a bike or coupe, install an engine tune or reinforced body, repaint, and spawn
+  your owned vehicle.
+- **Supply shop** — buy health and armor. Free health/armor crates also respawn around the city.
+- **Safehouse** — rest for full health and manage three save slots.
+
+Save slots are also available in the ⚙ panel. Loading a slot restores cash, story progress,
+location, owned vehicles and graphics settings. Armor absorbs impact damage before health, and
+upgraded bodies take less collision damage.
+
 ## Goals
 
 - Bike, car and on-foot play from the first playable build
 - Procedural city with day/night, traffic, pedestrians and dynamic police pursuit
-- Delivery, street race and taxi missions
+- Story chain, seven job types, garage economy and three save slots
 - 30 FPS target on mid-range phones (DPR cap, instancing, quality tiers)
 
 ## License
