@@ -46,7 +46,7 @@ export class PhotoMode {
 
   orbit(dx, dy) {
     if (!this.active) return;
-    this.yaw = wrapAngle(this.yaw + dx * 0.005);
+    this.yaw = wrapAngle(this.yaw - dx * 0.005);
     this.pitch = clamp(this.pitch + dy * 0.004, -0.35, 1.05);
   }
 

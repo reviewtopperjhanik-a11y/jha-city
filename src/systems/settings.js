@@ -10,12 +10,13 @@ const TIERS = [
 const MODES = ['auto', 'high', 'medium', 'low'];
 
 export class Settings {
-  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {} } = {}) {
+  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {} } = {}) {
     this.look = look;
     this.save = save;
     this.toast = toast;
     this.onSaveSlot = onSaveSlot;
     this.onLoadSlot = onLoadSlot;
+    this.onLook = onLook;
     this.mode = MODES.includes(save.quality) ? save.quality : 'auto';
     const fallbackTier = isMobile ? 1 : 0;
     this.autoTier = clamp(Number.isFinite(save.autoTier) ? Math.round(save.autoTier) : fallbackTier, 0, 2);
@@ -46,6 +47,7 @@ export class Settings {
         </div>
         <p class="settings-note">AUTO lowers effects when the frame rate drops. Pick a fixed level if you prefer a steady look.</p>
         <button class="settings-toggle" id="fps-toggle">FPS METER: ON</button>
+        <button class="settings-toggle" id="look-button">CHARACTER LOOK</button>
         <div class="settings-stat" id="settings-stat">60 FPS · AUTO · MEDIUM</div>
         <div class="settings-tip">Settings are saved automatically.</div>
         <div class="settings-label" style="padding-top:10px">SAVE SLOTS</div>
@@ -58,6 +60,7 @@ export class Settings {
     this.stat = this.overlay.querySelector('#settings-stat');
     this.slotRow = this.overlay.querySelector('#slot-row');
     this.fpsToggle = this.overlay.querySelector('#fps-toggle');
+    this.lookButton = this.overlay.querySelector('#look-button');
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
 
@@ -74,6 +77,10 @@ export class Settings {
     this.fpsToggle.addEventListener('click', () => {
       this.showFps = !this.showFps;
       this._apply();
+    });
+    this.lookButton.addEventListener('click', () => {
+      this.close();
+      this.onLook();
     });
     this._renderSlots();
 

@@ -40,30 +40,52 @@ export class Input {
       </div>`;
     const right = document.createElement('div');
     right.className = 'touch-right';
+    // Only the buttons that make sense for the current situation are shown.
+    // The joystick is always present; everything else is switched in groups.
     const buttons = [
-      ['boost', '⚡', 'boost'],
-      ['hb', 'DRIFT', 'hb'],
-      ['brake', 'BRAKE', 'brake'],
-      ['gas', 'GAS', 'gas'],
-      ['jump', 'JUMP', 'jump'],
-      ['e', 'E', 'e'],
-      ['cam', 'CAM', 'cam'],
-      ['time', 'D/N', 'time'],
-      ['jobs', 'JOBS', 'jobs'],
-      ['shop', 'SHOP', 'shop'],
-      ['horn', 'HORN', 'horn'],
-      ['weather', 'WX', 'weather'],
-      ['radio', 'RADIO', 'radio'],
-      ['photo', 'PHOTO', 'photo'],
-      ['look', 'LOOK', 'look'],
+      ['gas', 'GAS', 'gas', 'drive'],
+      ['brake', 'BRAKE', 'brake', 'drive'],
+      ['hb', 'DRIFT', 'hb', 'drive'],
+      ['boost', '⚡', 'boost', 'drive'],
+      ['e', 'E', 'e', 'drive foot mission'],
+      ['horn', 'HORN', 'horn', 'drive foot mission'],
+      ['radio', 'RADIO', 'radio', 'drive foot'],
+      ['photo', 'PHOTO', 'photo', 'drive foot mission photo'],
+      ['look', 'LOOK', 'look', 'foot'],
+      ['jump', 'JUMP', 'jump', 'foot'],
+      ['jobs', 'JOBS', 'jobs', 'foot mission'],
+      ['shop', 'SHOP', 'shop', 'foot mission'],
+      ['weather', 'WX', 'weather', 'foot'],
+      ['mission', 'START', 'mission', 'mission'],
     ];
     right.innerHTML = buttons
-      .map(([action, label, cls]) => `<button class="tbtn ${cls}" data-action="${action}">${label}</button>`)
+      .map(([action, label, cls, contexts]) => `<button class="tbtn ${cls}" data-action="${action}" data-contexts="${contexts}">${label}</button>`)
       .join('');
     root.append(left, right);
     this.base = left.querySelector('#stick-base');
     this.knob = left.querySelector('#stick-knob');
     this.buttons = [...right.querySelectorAll('button')];
+    this.context = null;
+    this.setContext('foot');
+  }
+
+  setContext(context) {
+    if (context === this.context) return;
+    this.context = context;
+    for (const btn of this.buttons) {
+      const show = (btn.dataset.contexts || '').split(' ').includes(context);
+      btn.hidden = !show;
+      if (!show) {
+        const action = btn.dataset.action;
+        this.held[action] = false;
+        btn.classList.remove('down');
+      }
+    }
+  }
+
+  setButtonLabel(action, label) {
+    const btn = this.buttons.find((b) => b.dataset.action === action);
+    if (btn && btn.textContent !== label) btn.textContent = label;
   }
 
   _bind() {

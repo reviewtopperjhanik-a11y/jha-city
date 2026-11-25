@@ -274,6 +274,17 @@ export class Player {
       const c = world.collide(this.pos.x + mx * this._footSpeed * dt, this.pos.z + mz * this._footSpeed * dt, 0.6);
       this.pos.x = c.x;
       this.pos.z = c.z;
+      // A hard shove into a corner can leave the resolved point still inside a
+      // building. That strands the model in unlit geometry (it looks black)
+      // and the bad coordinates get auto-saved. Recover to the road at once.
+      if (world.collide(this.pos.x, this.pos.z, 0.6).hit) {
+        const safe = world.nearestRoad ? world.nearestRoad(this.pos.x, this.pos.z) : null;
+        if (safe) {
+          this.pos.x = safe.x;
+          this.pos.z = safe.z;
+          this.onNotice('BACK ON THE STREET');
+        }
+      }
       this.heading = wrapAngle(angleLerp(this.heading, Math.atan2(mx, mz), 1 - Math.exp(-12 * dt)));
     }
     if ((input.consume('jump') || input.consume('hb')) && this.onGround) {

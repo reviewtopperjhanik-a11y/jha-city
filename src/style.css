@@ -635,7 +635,9 @@ html, body {
   pointer-events: auto;
   touch-action: none;
 }
+.tbtn[hidden] { display: none; }
 .tbtn.down { background: rgba(247, 102, 133, 0.75); color: #fff; }
+.tbtn.mission { border-color: #5cffa8; color: #5cffa8; font-size: 10px; }
 .tbtn.horn { border-color: #ffc247; color: #ffc247; }
 .tbtn.weather { border-color: #8ff0e8; color: #8ff0e8; }
 .tbtn.gas { border-color: #2fb6b2; color: #8ff0e8; }

@@ -89,57 +89,76 @@ export class Vehicle {
       root.add(shell, cabin, glassBand, roof, bumperF, bumperR);
       shell.castShadow = cabin.castShadow = roof.castShadow = true;
     } else {
-      const frame = new THREE.Mesh(g('bikeFrame', () => new THREE.BoxGeometry(0.48, 0.46, 1.95)), body);
-      frame.position.y = 0.82;
-      const tank = new THREE.Mesh(g('bikeTank', () => new THREE.BoxGeometry(0.52, 0.34, 0.8)), body);
-      tank.position.set(0, 1.08, 0.18);
-      const seat = new THREE.Mesh(g('bikeSeat', () => new THREE.BoxGeometry(0.48, 0.16, 0.62)), dark);
-      seat.position.set(0, 1.02, -0.48);
-      const wheelGeo = g('bikeWheel', () => new THREE.CylinderGeometry(0.56, 0.56, 0.18, 14));
-      for (const z of [-0.98, 0.98]) {
-        const w = new THREE.Mesh(wheelGeo, dark);
-        w.rotation.z = Math.PI / 2;
-        w.position.set(0, 0.58, z);
-        this.wheels.push(w);
-        root.add(w);
-      }
-      const bars = new THREE.Mesh(g('bikeBars', () => new THREE.BoxGeometry(1.15, 0.1, 0.12)), dark);
-      bars.position.set(0, 1.36, 0.64);
-      const lamp = new THREE.Mesh(g('bikeLamp', () => new THREE.SphereGeometry(0.2, 10, 8)), glow(0xfff1c2));
-      lamp.position.set(0, 0.95, 1.04);
-      root.add(frame, tank, seat, bars, lamp);
-
-      // Detailed seated rider: head, hair, eyes, hands, bent legs, shoes.
-      const skin = mat(0xd9a06b, this.look);
-      const hair = mat(0x2b1a12, this.look);
-      const jacket = mat(C.orchid, this.look);
-      const pants = mat(0x2a3050, this.look);
-      const shoes = mat(0x15182a, this.look);
-      const eye = new THREE.MeshBasicMaterial({ color: 0x0c0d1b });
-      const part = (mesh, x, y, z, rx = 0, ry = 0, rz = 0) => {
+      // A low, forward-leaning sportbike: spoked wheels, tapered nose fairing,
+      // sculpted tank, fork, swingarm, exhaust and a tucked-in rider.
+      const rim = mat(0x9aa2c4, this.look);
+      const steel = mat(0x3a3f5c, this.look);
+      const glass = mat(0x17233d, this.look);
+      const visor = new THREE.MeshBasicMaterial({ color: 0x1b2b52, toneMapped: false });
+      const neon = glow(C.teal);
+      const add = (mesh, x, y, z, rx = 0, ry = 0, rz = 0) => {
         mesh.position.set(x, y, z);
         mesh.rotation.set(rx, ry, rz);
         mesh.castShadow = true;
         root.add(mesh);
         return mesh;
       };
-      part(new THREE.Mesh(g('riderHips', () => new THREE.BoxGeometry(0.5, 0.3, 0.36)), pants), 0, 1.18, -0.28);
-      part(new THREE.Mesh(g('riderTorso', () => new THREE.BoxGeometry(0.56, 0.76, 0.38)), jacket), 0, 1.58, -0.18, -0.22);
-      const head = part(new THREE.Mesh(g('riderHead', () => new THREE.SphereGeometry(0.26, 12, 10)), skin), 0, 2.1, 0.02);
-      part(new THREE.Mesh(g('riderHair', () => new THREE.SphereGeometry(0.272, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2)), hair), 0, 2.12, 0.0);
-      part(new THREE.Mesh(g('riderEye', () => new THREE.SphereGeometry(0.032, 6, 4)), eye), -0.09, 2.14, 0.245);
-      part(new THREE.Mesh(g('riderEye', () => new THREE.SphereGeometry(0.032, 6, 4)), eye), 0.09, 2.14, 0.245);
-      part(new THREE.Mesh(g('riderNose', () => new THREE.BoxGeometry(0.06, 0.07, 0.08)), skin), 0, 2.05, 0.27);
-      // Arms reaching the handlebars.
-      for (const s of [-1, 1]) {
-        part(new THREE.Mesh(g('riderArm', () => new THREE.BoxGeometry(0.14, 0.72, 0.16)), jacket), s * 0.31, 1.6, 0.0, 0.55);
-        part(new THREE.Mesh(g('riderHand', () => new THREE.SphereGeometry(0.09, 8, 6)), skin), s * 0.31, 1.33, 0.56);
-        // Bent legs on the pegs.
-        part(new THREE.Mesh(g('riderThigh', () => new THREE.BoxGeometry(0.22, 0.62, 0.24)), pants), s * 0.21, 1.03, 0.02, 1.0);
-        part(new THREE.Mesh(g('riderShin', () => new THREE.BoxGeometry(0.18, 0.55, 0.2)), pants), s * 0.24, 0.72, 0.3, -0.35);
-        part(new THREE.Mesh(g('riderShoe', () => new THREE.BoxGeometry(0.22, 0.14, 0.36)), shoes), s * 0.24, 0.52, 0.48);
+
+      const tyreGeo = g('bikeTyre', () => new THREE.CylinderGeometry(0.55, 0.55, 0.2, 14));
+      const rimGeo = g('bikeRim', () => new THREE.CylinderGeometry(0.33, 0.33, 0.22, 12));
+      const spokeGeo = g('bikeSpoke', () => new THREE.BoxGeometry(0.055, 0.055, 0.58));
+      for (const z of [-1.02, 1.08]) {
+        const wheel = new THREE.Group();
+        wheel.position.set(0, 0.58, z);
+        wheel.add(new THREE.Mesh(tyreGeo, dark), new THREE.Mesh(rimGeo, rim));
+        wheel.children[0].rotation.z = Math.PI / 2;
+        wheel.children[1].rotation.z = Math.PI / 2;
+        for (let i = 0; i < 4; i++) {
+          const spoke = new THREE.Mesh(spokeGeo, steel);
+          spoke.rotation.x = (i * Math.PI) / 4;
+          wheel.add(spoke);
+        }
+        this.wheels.push(wheel);
+        root.add(wheel);
       }
-      void head;
+
+      add(new THREE.Mesh(g('bikeSpine', () => new THREE.BoxGeometry(0.34, 0.28, 1.6)), dark), 0, 0.92, 0);
+      const nose = add(new THREE.Mesh(g('bikeNose', () => new THREE.CylinderGeometry(0.3, 0.52, 1.0, 6)), body), 0, 1.1, 1.0, Math.PI / 2);
+      const tank = add(new THREE.Mesh(g('bikeTank', () => new THREE.SphereGeometry(0.5, 12, 10)), body), 0, 1.14, 0.12);
+      tank.scale.set(0.95, 0.56, 1.5);
+      const tail = add(new THREE.Mesh(g('bikeTail', () => new THREE.BoxGeometry(0.44, 0.2, 0.8)), body), 0, 1.14, -0.86, -0.12);
+      add(new THREE.Mesh(g('bikeSeat', () => new THREE.BoxGeometry(0.42, 0.12, 0.72)), dark), 0, 1.27, -0.48);
+      add(new THREE.Mesh(g('bikeScreen', () => new THREE.BoxGeometry(0.48, 0.38, 0.06)), glass), 0, 1.56, 1.28, -0.34);
+      for (const x of [-0.16, 0.16]) {
+        add(new THREE.Mesh(g('bikeLamp', () => new THREE.BoxGeometry(0.17, 0.13, 0.1)), glow(0xfff1c2)), x, 1.06, 1.5);
+        add(new THREE.Mesh(g('bikeFork', () => new THREE.CylinderGeometry(0.055, 0.055, 0.92, 6)), steel), x, 0.94, 1.02, -0.34);
+        add(new THREE.Mesh(g('bikeStripe', () => new THREE.BoxGeometry(0.025, 0.035, 0.72)), neon), x * 2.4, 1.18, 0.12);
+      }
+      add(new THREE.Mesh(g('bikeSwing', () => new THREE.BoxGeometry(0.14, 0.12, 0.95)), steel), 0.2, 0.64, -0.52);
+      add(new THREE.Mesh(g('bikeExhaust', () => new THREE.CylinderGeometry(0.1, 0.12, 0.8, 8)), rim), -0.34, 0.7, -0.52, Math.PI / 2);
+      add(new THREE.Mesh(g('bikeBar', () => new THREE.BoxGeometry(1.0, 0.08, 0.1)), steel), 0, 1.52, 0.8);
+      add(new THREE.Mesh(g('bikeTailLight', () => new THREE.BoxGeometry(0.32, 0.12, 0.08)), glow(0xff4a5e)), 0, 1.2, -1.27);
+      void nose;
+      void tail;
+
+      // Rider in a racing tuck: helmet with a dark visor, leaning torso,
+      // arms on the bars and knees tucked against the tank.
+      const skin = mat(0xd9a06b, this.look);
+      const jacket = mat(C.orchid, this.look);
+      const pants = mat(0x2a3050, this.look);
+      const shoes = mat(0x15182a, this.look);
+      const helmet = mat(0x141827, this.look);
+      add(new THREE.Mesh(g('riderHips', () => new THREE.BoxGeometry(0.42, 0.26, 0.34)), pants), 0, 1.28, -0.32);
+      add(new THREE.Mesh(g('riderTorso', () => new THREE.BoxGeometry(0.52, 0.72, 0.36)), jacket), 0, 1.68, -0.08, -0.5);
+      add(new THREE.Mesh(g('riderHelmet', () => new THREE.SphereGeometry(0.28, 12, 10)), helmet), 0, 2.05, 0.34);
+      add(new THREE.Mesh(g('riderVisor', () => new THREE.BoxGeometry(0.4, 0.14, 0.08)), visor), 0, 2.06, 0.6);
+      for (const s of [-1, 1]) {
+        add(new THREE.Mesh(g('riderArm', () => new THREE.BoxGeometry(0.13, 0.68, 0.15)), jacket), s * 0.3, 1.66, 0.3, 0.72);
+        add(new THREE.Mesh(g('riderHand', () => new THREE.SphereGeometry(0.085, 8, 6)), skin), s * 0.46, 1.48, 0.79);
+        add(new THREE.Mesh(g('riderThigh', () => new THREE.BoxGeometry(0.2, 0.56, 0.22)), pants), s * 0.22, 1.14, 0.06, 0.95);
+        add(new THREE.Mesh(g('riderShin', () => new THREE.BoxGeometry(0.17, 0.5, 0.19)), pants), s * 0.25, 0.83, 0.24, -0.4);
+        add(new THREE.Mesh(g('riderShoe', () => new THREE.BoxGeometry(0.2, 0.13, 0.34)), shoes), s * 0.25, 0.6, 0.42);
+      }
     }
     return root;
   }

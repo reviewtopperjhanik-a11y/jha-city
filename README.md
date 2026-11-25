@@ -46,9 +46,17 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Quality / FPS meter | ⚙ button | ⚙ button |
 | Bribe police ($500) | P | — |
 
+Touch buttons are **situational** — the joystick is always there, but the right-hand buttons
+swap by context: on foot you get JUMP / JOBS / SHOP / WX / LOOK / RADIO / PHOTO / E / HORN;
+driving swaps those for GAS / BRAKE / DRIFT / BOOST; near a glowing mission or business beacon
+you get START / JOBS / SHOP; photo mode leaves just the PHOTO button. Camera drag now follows
+the finger — drag right and the view turns right.
+
 Quality starts on **AUTO**; it drops pixel density, bloom and shadows when the frame rate
 sags, and slowly raises them again when there is headroom. Pick HIGH / MEDIUM / LOW in the
-⚙ panel to lock a level. Settings are saved automatically.
+⚙ panel to lock a level. Settings are saved automatically. If a building ever shoves you
+inside its wall, the character is snapped back to the road immediately; saved positions are
+also snapped to a road when a slot loads, so you never respawn trapped in unlit geometry.
 
 ## Police & wanted level
 

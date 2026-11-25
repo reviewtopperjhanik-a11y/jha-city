@@ -73,9 +73,11 @@ const settings = new Settings(ui, look, save, {
   toast: (msg) => hud.toast(msg),
   onSaveSlot: (slot) => { save.activeSlot = slot; menu.close(); },
   onLoadSlot: (slot, state) => applySlotState(slot, state),
+  onLook: () => openWardrobe(),
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
-const player = new Player(scene, look, save.x, save.z, save.armor);
+const initialSpawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
+const player = new Player(scene, look, initialSpawn.x, initialSpawn.z, save.armor);
 player.applyStyle(save.style);
 player.onNotice = (msg) => hud.toast(msg);
 const economy = new Economy(scene, look, world, {
@@ -188,7 +190,8 @@ canvas.addEventListener('pointermove', (e) => {
   const dy = e.clientY - lastY;
   dragMoved += Math.hypot(dx, dy);
   if (photo.active) photo.orbit(dx, dy);
-  else cameraYaw += dx * 0.006;
+  // Drag right looks right: subtracting keeps the world moving left on screen.
+  else cameraYaw -= dx * 0.006;
   lastX = e.clientX;
   lastY = e.clientY;
   lookHold = 1.5;
@@ -214,6 +217,25 @@ function resize() {
   look.resize(w, h);
 }
 window.addEventListener('resize', resize);
+
+function openWardrobe() {
+  menu.showWardrobe(
+    () => save.style,
+    (key, delta) => {
+      save.style = cycleStyle(save.style, key, delta);
+      player.applyStyle(save.style);
+      achievements.event('makeover');
+      saveGame(save, true);
+    },
+    () => {
+      save.style = randomStyle();
+      player.applyStyle(save.style);
+      achievements.event('makeover');
+      saveGame(save, true);
+    },
+    () => hud.toast('LOOK SAVED'),
+  );
+}
 
 function handleActions() {
   // Photo mode takes over the action buttons: E / HORN snap, K exits.
@@ -282,22 +304,7 @@ function handleActions() {
     hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
   }
   if (input.consume('look')) {
-    menu.showWardrobe(
-      () => save.style,
-      (key, delta) => {
-        save.style = cycleStyle(save.style, key, delta);
-        player.applyStyle(save.style);
-        achievements.event('makeover');
-        saveGame(save, true);
-      },
-      () => {
-        save.style = randomStyle();
-        player.applyStyle(save.style);
-        achievements.event('makeover');
-        saveGame(save, true);
-      },
-      () => hud.toast('LOOK SAVED'),
-    );
+    openWardrobe();
     return;
   }
   if (input.consume('bribe')) {
@@ -602,6 +609,13 @@ function frame(now) {
   gameTime += dt;
   input.poll();
   if (menu.isOpen && photo.active) photo.exit();
+  // Touch controls follow the situation: on foot, driving, at a mission/beacon,
+  // or inside photo mode. The joystick stays available in every context.
+  input.setContext(
+    photo.active ? 'photo'
+      : player.vehicle ? 'drive'
+        : economy.nearest(player.pos, 18) ? 'mission' : 'foot',
+  );
   lights.update(dt);
   weather.update(dt, player);
   look.setTime(currentHours());
