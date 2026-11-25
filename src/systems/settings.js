@@ -4,19 +4,20 @@ import { saveGame, saveSlot, listSlots, loadSlot, currentSlot } from '../core/sa
 // Each tier trades pixel density, bloom and shadows to hold a playable frame rate.
 const TIERS = [
   { key: 'high', label: 'HIGH', dpr: 1.5, bloom: true, shadows: true, shadowSize: 1024 },
-  { key: 'medium', label: 'MEDIUM', dpr: 1.15, bloom: true, shadows: true, shadowSize: 512 },
-  { key: 'low', label: 'LOW', dpr: 1, bloom: false, shadows: false, shadowSize: 512 },
+  { key: 'medium', label: 'MEDIUM', dpr: 1.35, bloom: true, shadows: true, shadowSize: 512 },
+  { key: 'low', label: 'LOW', dpr: 1.25, bloom: false, shadows: false, shadowSize: 512 },
 ];
 const MODES = ['auto', 'high', 'medium', 'low'];
 
 export class Settings {
-  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {} } = {}) {
+  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {}, onQuality = () => {} } = {}) {
     this.look = look;
     this.save = save;
     this.toast = toast;
     this.onSaveSlot = onSaveSlot;
     this.onLoadSlot = onLoadSlot;
     this.onLook = onLook;
+    this.onQuality = onQuality;
     this.mode = MODES.includes(save.quality) ? save.quality : 'auto';
     const fallbackTier = isMobile ? 1 : 0;
     this.autoTier = clamp(Number.isFinite(save.autoTier) ? Math.round(save.autoTier) : fallbackTier, 0, 2);
@@ -55,7 +56,6 @@ export class Settings {
       </div>`;
     root.append(this.overlay);
 
-    this.gear = root.querySelector('#hud-settings');
     this.fpsEl = root.querySelector('#hud-fps');
     this.stat = this.overlay.querySelector('#settings-stat');
     this.slotRow = this.overlay.querySelector('#slot-row');
@@ -64,7 +64,6 @@ export class Settings {
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
 
-    this.gear?.addEventListener('click', () => this.open());
     this.overlay.addEventListener('click', (e) => {
       if (e.target === this.overlay) this.close();
     });
@@ -128,6 +127,7 @@ export class Settings {
   _apply() {
     const preset = this._preset();
     this.look.applyQuality(preset);
+    this.onQuality(preset);
     this.save.quality = this.mode;
     this.save.autoTier = this.autoTier;
     this.save.showFps = this.showFps;
@@ -200,12 +200,12 @@ export class Settings {
     if (this.mode !== 'auto' || this.elapsed < 4) return;
     if (this.upgradeLocked && this.elapsed > this.upgradeLockUntil) this.upgradeLocked = false;
 
-    if (this.fpsSmooth < 27) this.lowTime += dt;
+    if (this.fpsSmooth < 28) this.lowTime += dt;
     else this.lowTime = Math.max(0, this.lowTime - dt * 0.7);
-    if (this.fpsSmooth > 56) this.highTime += dt;
+    if (this.fpsSmooth > 45) this.highTime += dt;
     else this.highTime = Math.max(0, this.highTime - dt * 0.8);
 
-    if (this.lowTime > 2.5 && this.autoTier < 2 && this.cooldown <= 0) {
+    if (this.lowTime > 1.8 && this.autoTier < 2 && this.cooldown <= 0) {
       if (this.elapsed - this.lastUpgrade < 25) {
         this.upgradeLocked = true;
         this.upgradeLockUntil = this.elapsed + 180;
@@ -220,7 +220,7 @@ export class Settings {
     }
 
     if (
-      this.highTime > 12 &&
+      this.highTime > 9 &&
       this.autoTier > 0 &&
       !this.upgradeLocked &&
       this.cooldown <= 0 &&

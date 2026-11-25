@@ -7,8 +7,16 @@ import { C } from './palette.js';
 import { clamp, smooth, TAU } from '../util/math.js';
 
 const col = (hex) => new THREE.Color(hex);
-const mix = (a, b, t) => col(a).lerp(col(b), t);
 const rainTint = col(0x6a7490);
+const scratchMix = col(0);
+
+// setTime runs every frame. Doing the colour blending into reusable Color
+// objects keeps the day/night cycle out of the GC's way.
+function mixInto(out, a, b, t) {
+  out.set(a);
+  scratchMix.set(b);
+  return out.lerp(scratchMix, t);
+}
 
 export function makeGradientMap() {
   // Cool shadow -> warm lit. Bands, not pixels: no PS1 dither/jitter.
@@ -71,7 +79,7 @@ function createSky() {
 }
 
 export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr = 1.5 } = {}) {
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dpr));
+  renderer.setPixelRatio(Math.max(1.25, Math.min(window.devicePixelRatio || 1, dpr)));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.15;
@@ -109,6 +117,13 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   const u = sky.material.uniforms;
   const state = { hours: 18.4, day: 0.35, bloomEnabled, dpr: 0, shadows: true, shadowSize: 1024, weather: 0 };
   const horizonNow = col(C.tangerine);
+  const horizonScratch = col(0);
+  const topScratch = col(0);
+  const groundScratch = col(0);
+  const skyLightScratch = col(0);
+  const sunScratch = col(0);
+  const bottomScratch = col(0);
+  const dirScratch = new THREE.Vector3();
   let viewW = window.innerWidth;
   let viewH = window.innerHeight;
 
@@ -127,32 +142,45 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
 
   function setTime(hours) {
     state.hours = ((hours % 24) + 24) % 24;
-    const angle = ((state.hours - 6) / 24) * TAU;
+    const h = state.hours;
+    const angle = ((h - 6) / 24) * TAU;
     const elev = Math.sin(angle);
-    const day = clamp(elev * 1.5 + 0.35, 0.15, 1);
-    state.day = day;
+    const sunUp = clamp(elev * 1.45 + 0.2, 0, 1);
+    // 11:00-14:00 reads as clear blue; dusk keeps its sunset band; night is neon.
+    const midday = smooth(clamp((h - 9.5) / 2, 0, 1)) * smooth(clamp((16.5 - h) / 2.5, 0, 1));
+    const twilight = clamp(1 - Math.abs(elev) * 3.2, 0, 1);
+    const night = 1 - sunUp;
+    state.day = clamp(sunUp * 0.75 + midday * 0.25, 0.12, 1);
+
     // Keep a soft "moon" above the horizon at night so the city stays readable.
-    const dir = new THREE.Vector3(Math.cos(angle) * 180, Math.max(elev, 0.18) * 180, 70).normalize();
-    sun.position.copy(dir).multiplyScalar(220);
+    dirScratch.set(Math.cos(angle) * 180, Math.max(elev, 0.18) * 180, 70).normalize();
+    sun.position.copy(dirScratch).multiplyScalar(220);
     sun.target.position.set(0, 0, 0);
-    u.sunDir.value.copy(dir);
+    u.sunDir.value.copy(dirScratch);
 
-    const horizon = elev > 0
-      ? mix(0x2b2a5e, mix(C.flamingo, C.tangerine, smooth(clamp(elev * 2, 0, 1))), day)
-      : mix(0x232a55, C.orchid, clamp(0.35 + elev * 0.15, 0, 0.55));
-    const top = mix(0x141a3d, C.dusk, day);
-    const skyLight = elev > 0 ? mix(0x6f86d6, 0xa9d7ff, day) : 0x7d91d8;
-    const ground = mix(0x303a5a, C.sand, day * 0.55);
+    mixInto(horizonScratch, 0x232a55, C.tangerine, clamp(sunUp - midday * 0.85, 0, 1));
+    horizonScratch.lerp(scratchMix.set(0x8bbcf5), midday * 0.92);
+    horizonScratch.lerp(scratchMix.set(C.flamingo), twilight * (elev >= 0 ? 0.62 : 0.34));
+    horizonScratch.lerp(scratchMix.set(0x151a3a), night * (1 - twilight) * 0.8);
 
-    u.horizonColor.value.copy(horizon);
-    u.topColor.value.copy(top);
-    u.bottomColor.value.copy(mix(0x111738, horizon, 0.45));
-    u.sunColor.value.copy(elev > 0 ? mix(C.amber, 0xfff3d0, day) : 0xb9c8ff);
-    hemi.color.copy(skyLight);
-    hemi.groundColor.copy(ground);
-    hemi.intensity = 0.7 + day * 0.55;
-    sun.color.copy(elev > 0 ? mix(C.tangerine, 0xffeed6, day) : 0xa8bdff);
-    horizonNow.copy(horizon);
+    mixInto(topScratch, 0x11173a, 0x2f6fc4, midday);
+    topScratch.lerp(scratchMix.set(C.dusk), sunUp * 0.2);
+    topScratch.lerp(scratchMix.set(0x0b0d24), night * 0.5);
+    mixInto(groundScratch, 0x303a5a, C.sand, state.day * 0.5);
+    mixInto(skyLightScratch, 0x7d91d8, 0xbfe3ff, midday);
+    mixInto(sunScratch, C.amber, 0xfff3d0, state.day);
+
+    u.horizonColor.value.copy(horizonScratch);
+    u.topColor.value.copy(topScratch);
+    mixInto(bottomScratch, 0x111738, horizonScratch, 0.45);
+    u.bottomColor.value.copy(bottomScratch);
+    u.sunColor.value.copy(sunScratch);
+    hemi.color.copy(skyLightScratch);
+    hemi.groundColor.copy(groundScratch);
+    hemi.intensity = 0.7 + state.day * 0.55;
+    mixInto(sunScratch, elev > 0 ? C.tangerine : 0xa8bdff, 0xffeed6, state.day);
+    sun.color.copy(sunScratch);
+    horizonNow.copy(horizonScratch);
     applyAtmosphere();
   }
 
@@ -173,7 +201,7 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   }
 
   function setDpr(v) {
-    const ratio = Math.min(window.devicePixelRatio || 1, v);
+    const ratio = Math.max(1.25, Math.min(window.devicePixelRatio || 1, v));
     state.dpr = ratio;
     renderer.setPixelRatio(ratio);
     composer.setPixelRatio(ratio);

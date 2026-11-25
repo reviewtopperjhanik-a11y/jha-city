@@ -131,6 +131,7 @@ export class Police {
     this.officers = [];
     this.roadblocks = [];
     this.heli = null;
+    this._audioState = { level: 0, pan: 0, heli: 0 };
     this.active = false;
     this.spawnDelay = 0;
     this.roadblockCooldown = 0;
@@ -847,7 +848,11 @@ export class Police {
       const h = this.heli.group.position;
       heli = clamp(1 - Math.hypot(h.x - playerPos.x, h.z - playerPos.z) / 190, 0.15, 1);
     }
-    return { level, pan, heli };
+    const out = this._audioState;
+    out.level = level;
+    out.pan = pan;
+    out.heli = heli;
+    return out;
   }
 
   clearAll() {

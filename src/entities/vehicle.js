@@ -12,7 +12,11 @@ const mat = (color, look) => {
   }
   return mats.get(key);
 };
-const glow = (color) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
+const glowMats = new Map();
+const glow = (color) => {
+  if (!glowMats.has(color)) glowMats.set(color, new THREE.MeshBasicMaterial({ color, toneMapped: false }));
+  return glowMats.get(color);
+};
 
 export class Vehicle {
   constructor(scene, look, type, x, z, heading, color = C.flamingo) {
@@ -81,11 +85,37 @@ export class Vehicle {
         root.add(t);
       }
       const mirrorGeo = g('carMirror', () => new THREE.BoxGeometry(0.16, 0.1, 0.24));
+      const handleGeo = g('carHandle', () => new THREE.BoxGeometry(0.05, 0.06, 0.28));
+      const stripeGeo = g('carStripe', () => new THREE.BoxGeometry(0.035, 0.08, 3.4));
+      const hubGeo = g('carHub', () => new THREE.CylinderGeometry(0.24, 0.24, 0.07, 10));
+      const rim = mat(0xc9d3e8, this.look);
+      const trim = mat(0x8ff0e8, this.look);
       for (const x of [-1.26, 1.26]) {
         const m = new THREE.Mesh(mirrorGeo, body);
         m.position.set(x, 1.44, 0.82);
         root.add(m);
+        for (const z of [-0.55, 0.65]) {
+          const handle = new THREE.Mesh(handleGeo, trim);
+          handle.position.set(x * 0.97, 1.06, z);
+          root.add(handle);
+        }
+        const stripe = new THREE.Mesh(stripeGeo, trim);
+        stripe.position.set(x * 0.99, 0.93, 0);
+        root.add(stripe);
       }
+      for (const x of [-1.18, 1.18]) {
+        for (const z of [-1.5, 1.5]) {
+          const hub = new THREE.Mesh(hubGeo, rim);
+          hub.rotation.z = Math.PI / 2;
+          hub.position.set(x + Math.sign(x) * 0.17, 0.5, z);
+          root.add(hub);
+        }
+      }
+      const grille = new THREE.Mesh(g('carGrille', () => new THREE.BoxGeometry(1.25, 0.16, 0.09)), dark);
+      grille.position.set(0, 0.72, 2.34);
+      const plate = new THREE.Mesh(g('carPlate', () => new THREE.BoxGeometry(0.62, 0.16, 0.06)), glow(0xf6e6c8));
+      plate.position.set(0, 0.55, 2.4);
+      root.add(grille, plate);
       root.add(shell, cabin, glassBand, roof, bumperF, bumperR);
       shell.castShadow = cabin.castShadow = roof.castShadow = true;
     } else {

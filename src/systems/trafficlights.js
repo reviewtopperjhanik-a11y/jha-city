@@ -25,6 +25,7 @@ export class TrafficLights {
     this.phaseIndex = 0;
     this.timer = PHASES[0].time;
     this.heads = [];
+    this._status = { label: '', tone: '' };
 
     const housingMat = new THREE.MeshToonMaterial({ color: 0x171b2e, gradientMap: look?.gradientMap });
     const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
@@ -131,9 +132,18 @@ export class TrafficLights {
       const dir = axis === 'z' ? (Math.cos(h) >= 0 ? 1 : -1) : (Math.sin(h) >= 0 ? 1 : -1);
       const stop = this.nextStop(player.pos, axis, dir);
       if (stop && stop.dist >= 0 && stop.dist < 26) {
-        if (this.canGo(axis)) return { label: 'GREEN', tone: 'go' };
-        if (this.caution(axis)) return { label: 'AMBER', tone: 'slow' };
-        return { label: 'RED', tone: 'stop' };
+        const out = this._status;
+        if (this.canGo(axis)) {
+          out.label = 'GREEN';
+          out.tone = 'go';
+        } else if (this.caution(axis)) {
+          out.label = 'AMBER';
+          out.tone = 'slow';
+        } else {
+          out.label = 'RED';
+          out.tone = 'stop';
+        }
+        return out;
       }
     }
     return null;

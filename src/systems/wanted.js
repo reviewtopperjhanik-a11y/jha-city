@@ -19,6 +19,7 @@ export class Wanted {
     this._senseTimer = 0;
     this._seen = false;
     this._senseStars = -1;
+    this._hudState = { label: '', tone: '', progress: 0 };
   }
 
   crime(amount = 1, time = 0, x = null, z = null) {
@@ -126,12 +127,24 @@ export class Wanted {
 
   hudState() {
     if (this.stars <= 0) return null;
-    if (this.spotted) return { label: 'SPOTTED', tone: 'spotted', progress: 1 };
+    const out = this._hudState;
+    if (this.spotted) {
+      out.label = 'SPOTTED';
+      out.tone = 'spotted';
+      out.progress = 1;
+      return out;
+    }
     const progress = clamp(this.evade / Math.max(0.1, this.evadeNeed), 0, 1);
     if (this.evade > 0.05) {
-      return { label: `HIDDEN ${Math.round(progress * 100)}%`, tone: 'hidden', progress };
+      out.label = `HIDDEN ${Math.round(progress * 100)}%`;
+      out.tone = 'hidden';
+      out.progress = progress;
+    } else {
+      out.label = 'SEARCHING';
+      out.tone = 'search';
+      out.progress = 0;
     }
-    return { label: 'SEARCHING', tone: 'search', progress: 0 };
+    return out;
   }
 
   clear(silent = false) {

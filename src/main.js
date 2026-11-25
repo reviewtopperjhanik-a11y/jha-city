@@ -1,4 +1,5 @@
 import './style.css';
+import './ui-layout.css';
 import * as THREE from 'three';
 import { createLook } from './look/look.js';
 import { createCity } from './world/city.js';
@@ -17,6 +18,7 @@ import { Missions } from './systems/missions.js';
 import { Hud } from './systems/hud.js';
 import { Minimap } from './systems/minimap.js';
 import { Settings } from './systems/settings.js';
+import { createLayout } from './systems/layout.js';
 import { Achievements } from './systems/achievements.js';
 import { PhotoMode } from './systems/photo.js';
 import { cycleStyle, randomStyle } from './look/wardrobe.js';
@@ -68,14 +70,21 @@ const photo = new PhotoMode(camera, canvas, {
 audio.setRadio(save.radio || 0);
 hud.setRadio(audio.radioLabel());
 const menu = new Menu(ui, { toast: (msg) => hud.toast(msg) });
+// Weather is built before settings so the quality callback can disable it on LOW.
+const weather = new Weather(scene, look, world, {
+  change: (label) => hud.toast(`WEATHER: ${label}`),
+});
+weather.setMode(save.weather || 'auto');
 const settings = new Settings(ui, look, save, {
   isMobile,
   toast: (msg) => hud.toast(msg),
   onSaveSlot: (slot) => { save.activeSlot = slot; menu.close(); },
   onLoadSlot: (slot, state) => applySlotState(slot, state),
   onLook: () => openWardrobe(),
+  onQuality: (preset) => weather.setLowQuality(preset.key === 'low'),
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
+const layout = createLayout(ui, { input, hud, minimap });
 const initialSpawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
 const player = new Player(scene, look, initialSpawn.x, initialSpawn.z, save.armor);
 player.applyStyle(save.style);
@@ -100,10 +109,6 @@ const police = new Police(scene, look, world, {
   toast: (msg) => hud.toast(msg),
 });
 const lights = new TrafficLights(scene, look, world);
-const weather = new Weather(scene, look, world, {
-  change: (label) => hud.toast(`WEATHER: ${label}`),
-});
-weather.setMode(save.weather || 'auto');
 const traffic = new Traffic(scene, look, world, {
   crime: (kind) => {
     wanted.crime(1, gameTime, player.pos.x, player.pos.z);
@@ -153,6 +158,37 @@ let lookHold = 0;
 const camDesired = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 const lookNow = new THREE.Vector3();
+const camFrom = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+
+// Frame state objects are written in place; the render loop must not churn GC.
+const audioFrame = {
+  speed: 0, throttle: 0, wanted: 0, driving: false, time: 0,
+  siren: 0, sirenPan: 0, heli: 0, rain: 0, skid: 0,
+};
+const hudFrame = {
+  money: 0, wanted: 0, hours: 0, mission: '', missionActive: false, hp: 100,
+  armor: 0, speed: 0, mode: 'foot', heat: null, weather: '', signal: null,
+};
+const achievementFrame = {
+  player, hours: 0, wanted: 0, weather: 0, missionsDone: 0, storyStep: 0,
+};
+const mapOptions = { landmarks: world.landmarks, incidents: [] };
+const markerResult = {};
+
+function setAudioFrame(speed, throttle, wanted, driving, time, siren, sirenPan, heli, rain, skid = 0) {
+  audioFrame.speed = speed;
+  audioFrame.throttle = throttle;
+  audioFrame.wanted = wanted;
+  audioFrame.driving = driving;
+  audioFrame.time = time;
+  audioFrame.siren = siren;
+  audioFrame.sirenPan = sirenPan;
+  audioFrame.heli = heli;
+  audioFrame.rain = rain;
+  audioFrame.skid = skid;
+  return audioFrame;
+}
 
 function snapCamera() {
   cameraYaw = player.heading;
@@ -173,19 +209,25 @@ function unlockAudio() {
 window.addEventListener('pointerdown', unlockAudio, { once: true });
 window.addEventListener('keydown', unlockAudio, { once: true });
 
-// Drag on the canvas (not the controls) to orbit the chase camera.
+// Dragging the right half of the screen orbits the chase camera. The canvas
+// keeps the same behaviour for mouse users on the uncovered left half.
 let dragging = false;
+let dragPointer = null;
 let lastX = 0;
 let lastY = 0;
 let dragMoved = 0;
-canvas.addEventListener('pointerdown', (e) => {
+function beginLookDrag(e, surface) {
+  if (dragPointer !== null) return;
+  e.preventDefault();
   dragging = true;
+  dragPointer = e.pointerId;
   dragMoved = 0;
   lastX = e.clientX;
   lastY = e.clientY;
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
+  surface.setPointerCapture?.(e.pointerId);
+}
+function moveLookDrag(e) {
+  if (!dragging || e.pointerId !== dragPointer) return;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
   dragMoved += Math.hypot(dx, dy);
@@ -195,13 +237,19 @@ canvas.addEventListener('pointermove', (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
   lookHold = 1.5;
-});
-const endDrag = () => {
-  if (dragging && photo.active && dragMoved < 8 && photo.requestCapture()) hud.toast('SNAP!');
+}
+function endLookDrag(e) {
+  if (!dragging || (e && e.pointerId !== dragPointer)) return;
+  if (photo.active && dragMoved < 8 && photo.requestCapture()) hud.toast('SNAP!');
   dragging = false;
-};
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', () => { dragging = false; });
+  dragPointer = null;
+}
+for (const surface of [canvas, layout.lookZone]) {
+  surface?.addEventListener('pointerdown', (e) => beginLookDrag(e, surface));
+  surface?.addEventListener('pointermove', moveLookDrag);
+  surface?.addEventListener('pointerup', endLookDrag);
+  surface?.addEventListener('pointercancel', endLookDrag);
+}
 canvas.addEventListener('wheel', (e) => {
   if (!photo.active) return;
   e.preventDefault();
@@ -236,6 +284,50 @@ function openWardrobe() {
     () => hud.toast('LOOK SAVED'),
   );
 }
+
+const QUALITY_MODES = ['auto', 'high', 'medium', 'low'];
+
+function cycleWeather() {
+  save.weather = weather.cycle();
+  hud.toast(`WEATHER: ${weather.labelForTarget(weather.target)}`);
+  saveGame(save, true);
+}
+
+function nextRadio() {
+  audio.radioNext();
+  save.radio = audio.radioIndex;
+  hud.setRadio(audio.radioLabel());
+  hud.toast(`RADIO: ${audio.radioStation.label}`);
+  saveGame(save, true);
+}
+
+function openQuickMenu() {
+  menu.showQuick([
+    { key: 'jobs', label: 'JOBS', sub: 'Job board and story', run: () => menu.showJobs(
+      missions,
+      (type) => missions.start(type, player),
+      () => missions.startStory(player),
+    ) },
+    { key: 'shop', label: 'SHOP', sub: 'Nearest business', run: () => {
+      const loc = economy.nearest(player.pos);
+      if (loc) openBusinessMenu(loc);
+      else hud.toast('NO BUSINESS NEARBY — SEE THE MAP');
+    } },
+    { key: 'photo', label: 'PHOTO', sub: 'Free camera', run: () => {
+      photo.enter(player, cameraYaw);
+      hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
+    } },
+    { key: 'wx', label: 'WX', sub: `Now: ${weather.label()}`, run: cycleWeather },
+    { key: 'radio', label: 'RADIO', sub: audio.radioLabel(), run: nextRadio },
+    { key: 'quality', label: 'QUALITY', sub: `Now: ${settings.mode.toUpperCase()} · ${settings._preset().label}`, run: () => {
+      const next = QUALITY_MODES[(QUALITY_MODES.indexOf(settings.mode) + 1) % QUALITY_MODES.length];
+      settings.setMode(next);
+      hud.toast(`QUALITY: ${next.toUpperCase()}`);
+    } },
+    { key: 'settings', label: 'SETTINGS', sub: 'Graphics, look and saves', run: () => settings.open() },
+  ]);
+}
+document.getElementById('hud-settings')?.addEventListener('click', openQuickMenu);
 
 function handleActions() {
   // Photo mode takes over the action buttons: E / HORN snap, K exits.
@@ -287,18 +379,8 @@ function handleActions() {
     audio.horn();
     traffic.onHorn(player.pos);
   }
-  if (input.consume('weather')) {
-    save.weather = weather.cycle();
-    hud.toast(`WEATHER: ${weather.labelForTarget(weather.target)}`);
-    saveGame(save, true);
-  }
-  if (input.consume('radio')) {
-    audio.radioNext();
-    save.radio = audio.radioIndex;
-    hud.setRadio(audio.radioLabel());
-    hud.toast(`RADIO: ${audio.radioStation.label}`);
-    saveGame(save, true);
-  }
+  if (input.consume('weather')) cycleWeather();
+  if (input.consume('radio')) nextRadio();
   if (input.consume('photo')) {
     photo.enter(player, cameraYaw);
     hud.toast('PHOTO MODE · DRAG TO ORBIT · E TO SNAP · K EXIT');
@@ -476,6 +558,81 @@ function applySlotState(slot, state) {
   saveGame(save, true, slot);
 }
 
+// Fraction along from->to where an oriented vehicle box begins (1 = clear).
+// Vehicles are small and numerous, so this stays allocation-free.
+function vehicleRay(from, to, v) {
+  // The camera rides with the player's vehicle; its focus point is inside it.
+  if (v === player.vehicle || v.role === 'wrecked') return 1;
+  const bike = v.type === 'bike';
+  const hx = (bike ? 0.8 : 1.45) + 0.5;
+  const hz = (bike ? 1.6 : 2.6) + 0.5;
+  const hy = (bike ? 2.5 : 2.2) + 0.3;
+  const cos = Math.cos(v.heading);
+  const sin = Math.sin(v.heading);
+  const ox = from.x - v.pos.x;
+  const oz = from.z - v.pos.z;
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  let tmin = 0;
+  let tmax = 1;
+  let t1;
+  let t2;
+  let lo;
+  let hi;
+
+  // Local X side.
+  const oxl = ox * cos - oz * sin;
+  const dxl = dx * cos - dz * sin;
+  if (Math.abs(dxl) < 0.00001) {
+    if (oxl < -hx || oxl > hx) return 1;
+  } else {
+    t1 = (-hx - oxl) / dxl;
+    t2 = (hx - oxl) / dxl;
+    lo = Math.min(t1, t2);
+    hi = Math.max(t1, t2);
+    tmin = Math.max(tmin, lo);
+    tmax = Math.min(tmax, hi);
+    if (tmin > tmax) return 1;
+  }
+
+  // Height, measured from the road surface.
+  if (Math.abs(to.y - from.y) < 0.00001) {
+    if (from.y < -0.2 || from.y > hy) return 1;
+  } else {
+    t1 = (-0.2 - from.y) / (to.y - from.y);
+    t2 = (hy - from.y) / (to.y - from.y);
+    lo = Math.min(t1, t2);
+    hi = Math.max(t1, t2);
+    tmin = Math.max(tmin, lo);
+    tmax = Math.min(tmax, hi);
+    if (tmin > tmax) return 1;
+  }
+
+  // Local Z (forward) side.
+  const ozl = ox * sin + oz * cos;
+  const dzl = dx * sin + dz * cos;
+  if (Math.abs(dzl) < 0.00001) {
+    if (ozl < -hz || ozl > hz) return 1;
+  } else {
+    t1 = (-hz - ozl) / dzl;
+    t2 = (hz - ozl) / dzl;
+    lo = Math.min(t1, t2);
+    hi = Math.max(t1, t2);
+    tmin = Math.max(tmin, lo);
+    tmax = Math.min(tmax, hi);
+    if (tmin > tmax) return 1;
+  }
+  return Math.max(0, tmin);
+}
+
+function clearCameraFraction(target) {
+  let fraction = world.cameraRay(camFrom, target, 0.6);
+  for (const v of traffic.vehicles) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
+  for (const v of police.cars) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
+  for (const v of economy.ownedVehicles) fraction = Math.min(fraction, vehicleRay(camFrom, target, v));
+  return fraction;
+}
+
 function updateCamera(dt, world) {
   lookHold = Math.max(0, lookHold - dt);
   if (lookHold <= 0) {
@@ -488,30 +645,19 @@ function updateCamera(dt, world) {
   const dx = -Math.sin(cameraYaw);
   const dz = -Math.cos(cameraYaw);
 
-  // Pull the camera in when a building is between it and the player.
-  let safe = dist;
-  for (let t = 1.5; t <= dist; t += 1.2) {
-    if (world.collide(player.pos.x + dx * t, player.pos.z + dz * t, 0.4).hit) {
-      safe = Math.max(2, t - 1.1);
-      break;
-    }
-  }
-  const pull = safe / dist;
-  camDesired.set(
-    player.pos.x + dx * safe,
-    player.pos.y + height * (0.55 + 0.45 * pull),
-    player.pos.z + dz * safe,
+  // Ray/segment collision against building bounds and other vehicles. The
+  // camera is never allowed to end up inside either, even during smooth follow.
+  camFrom.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  camTarget.set(
+    player.pos.x + dx * dist,
+    player.pos.y + height,
+    player.pos.z + dz * dist,
   );
+  const fraction = Math.max(2 / dist, clearCameraFraction(camTarget));
+  camDesired.copy(camFrom).lerp(camTarget, fraction);
   camera.position.lerp(camDesired, 1 - Math.exp(-(player.vehicle ? 7 : 9) * dt));
-  // Never let the smooth follow trail inside a wall the collision probe found.
-  const offX = camera.position.x - player.pos.x;
-  const offZ = camera.position.z - player.pos.z;
-  const offLen = Math.hypot(offX, offZ);
-  if (offLen > safe && offLen > 0.001) {
-    const k = safe / offLen;
-    camera.position.x = player.pos.x + offX * k;
-    camera.position.z = player.pos.z + offZ * k;
-  }
+  const actual = clearCameraFraction(camera.position);
+  if (actual < 1) camera.position.lerpVectors(camFrom, camera.position, Math.max(0.04, actual));
   lookNow.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
   camLook.lerp(lookNow, 1 - Math.exp(-12 * dt));
   camera.lookAt(camLook);
@@ -578,23 +724,25 @@ function renderFrame() {
   if (photo.pendingCapture) photo.capture();
 }
 
-function threatAngle() {
-  const sources = [];
-  for (const v of police.cars) sources.push(v.pos);
-  for (const o of police.officers) sources.push(o.pos);
-  for (const v of traffic.vehicles) if (v !== player.vehicle) sources.push(v.pos);
-  let best = null;
-  let bestDist = Infinity;
-  for (const p of sources) {
-    const d = dist2(p.x, p.z, player.pos.x, player.pos.z);
-    if (d < bestDist) {
-      bestDist = d;
-      best = p;
-    }
+let threatX = 0;
+let threatZ = 0;
+let threatDist = Infinity;
+function noteThreat(p) {
+  const d = dist2(p.x, p.z, player.pos.x, player.pos.z);
+  if (d < threatDist) {
+    threatDist = d;
+    threatX = p.x;
+    threatZ = p.z;
   }
-  if (!best || bestDist > 60 ** 2) return Math.random() * Math.PI * 2;
-  const dx = best.x - player.pos.x;
-  const dz = best.z - player.pos.z;
+}
+function threatAngle() {
+  threatDist = Infinity;
+  for (const v of police.cars) noteThreat(v.pos);
+  for (const o of police.officers) noteThreat(o.pos);
+  for (const v of traffic.vehicles) if (v !== player.vehicle) noteThreat(v.pos);
+  if (threatDist > 60 ** 2) return Math.random() * Math.PI * 2;
+  const dx = threatX - player.pos.x;
+  const dz = threatZ - player.pos.z;
   // Screen-right is world -x for the chase camera.
   return Math.atan2(-dx * Math.cos(cameraYaw) + dz * Math.sin(cameraYaw), dx * Math.sin(cameraYaw) + dz * Math.cos(cameraYaw));
 }
@@ -622,7 +770,7 @@ function frame(now) {
 
   if (busted) {
     bustTimer -= dt;
-    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0, rain: weather.level });
+    audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level));
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
     if (bustTimer <= 0) finishBusted();
@@ -631,7 +779,7 @@ function frame(now) {
   }
 
   if (menu.isOpen) {
-    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0, rain: weather.level });
+    audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level));
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
     renderFrame();
@@ -669,14 +817,12 @@ function frame(now) {
   settings.update(dt, 1 / rawDt);
 
   achievements.noteStars(wanted.stars);
-  if (achievements.update(dt, {
-    player,
-    hours: currentHours(),
-    wanted: wanted.stars,
-    weather: weather.level,
-    missionsDone: save.missionsDone,
-    storyStep: save.storyStep,
-  })) saveGame(save, true);
+  achievementFrame.hours = currentHours();
+  achievementFrame.wanted = wanted.stars;
+  achievementFrame.weather = weather.level;
+  achievementFrame.missionsDone = save.missionsDone;
+  achievementFrame.storyStep = save.storyStep;
+  if (achievements.update(dt, achievementFrame)) saveGame(save, true);
 
   const driving = !!player.vehicle;
   const driveInput = driving ? input.drivingInput() : null;
@@ -686,48 +832,46 @@ function frame(now) {
       : Math.max(0, Math.abs(driveInput.steer) - 0.6) * Math.min(1, player.speed / 22))
     : 0;
   const siren = police.audioState(player.pos, cameraYaw);
-  audio.update(dt, {
-    speed: player.speed,
-    throttle: driveInput ? driveInput.throttle : 0,
-    wanted: wanted.stars,
+  audio.update(dt, setAudioFrame(
+    player.speed,
+    driveInput ? driveInput.throttle : 0,
+    wanted.stars,
     driving,
-    time: gameTime,
-    siren: siren.level,
-    sirenPan: siren.pan,
-    heli: siren.heli,
-    rain: weather.level,
+    gameTime,
+    siren.level,
+    siren.pan,
+    siren.heli,
+    weather.level,
     skid,
-  });
+  ));
 
   const target = missions.currentPoint();
   if (target) {
     missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
     if (!photo.active) {
-      const marker = screenMarker(camera, target, window.innerWidth, window.innerHeight, 82);
+      const marker = screenMarker(camera, target, window.innerWidth, window.innerHeight, 82, markerResult);
       marker.label = (missions.active?.config?.name || 'OBJECTIVE').slice(0, 18);
       hud.updateArrow(marker);
     }
   } else {
     hud.updateArrow(null);
   }
-  hud.update({
-    money: save.money,
-    wanted: wanted.stars,
-    hours: currentHours(),
-    mission: missions.status(),
-    hp: player.hp,
-    armor: player.armor,
-    speed: player.speed,
-    mode: player.mode,
-    heat: wanted.hudState(),
-    weather: weather.label(),
-    signal: lights.status(player),
-  });
+  hudFrame.money = save.money;
+  hudFrame.wanted = wanted.stars;
+  hudFrame.hours = currentHours();
+  hudFrame.mission = missions.status();
+  hudFrame.missionActive = !!missions.active;
+  hudFrame.hp = player.hp;
+  hudFrame.armor = player.armor;
+  hudFrame.speed = player.speed;
+  hudFrame.mode = player.mode;
+  hudFrame.heat = wanted.hudState();
+  hudFrame.weather = weather.label();
+  hudFrame.signal = lights.status(player);
+  hud.update(hudFrame);
   if (++frameCount % 3 === 0) {
-    minimap.update(player, world, missions, police, wanted, economy, {
-      landmarks: world.landmarks,
-      incidents: traffic.incidents,
-    });
+    mapOptions.incidents = traffic.incidents;
+    minimap.update(player, world, missions, police, wanted, economy, mapOptions);
   }
 
   save.x = player.pos.x;
@@ -749,5 +893,5 @@ requestAnimationFrame(frame);
 // Small debug surface for testing in the browser console.
 window.__jha = {
   player, world, traffic, police, missions, wanted, economy, menu, look, save,
-  settings, minimap, lights, weather, audio, hud, input, photo, achievements,
+  settings, minimap, lights, weather, audio, hud, input, photo, achievements, layout,
 };

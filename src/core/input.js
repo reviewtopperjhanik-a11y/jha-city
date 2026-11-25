@@ -1,3 +1,8 @@
+const PAD_BUTTONS = [
+  [0, 'jump'], [1, 'hb'], [2, 'horn'], [3, 'radio'],
+  [5, 'boost'], [6, 'brake'], [7, 'gas'], [8, 'look'], [9, 'photo'],
+];
+
 const KEY_ACTIONS = {
   Space: 'hb',
   ShiftLeft: 'boost',
@@ -27,6 +32,15 @@ export class Input {
     this.padPrev = {};
     this.pad = null;
     this.stick = { x: 0, y: 0, active: false, id: null };
+    // Reused every frame so the input layer never creates GC pressure.
+    this.axisResult = { x: 0, y: 0 };
+    this.driveResult = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
+    this.padNext = {};
+    this.padPrev = {};
+    for (const [, action] of PAD_BUTTONS) {
+      this.padNext[action] = false;
+      this.padPrev[action] = false;
+    }
     this._build(root);
     this._bind();
   }
@@ -42,16 +56,18 @@ export class Input {
     right.className = 'touch-right';
     // Only the buttons that make sense for the current situation are shown.
     // The joystick is always present; everything else is switched in groups.
+    // LOOK is intentionally absent: the right half of the screen is the look
+    // surface. Keyboard L and gamepad Back still open the wardrobe.
     const buttons = [
       ['gas', 'GAS', 'gas', 'drive'],
       ['brake', 'BRAKE', 'brake', 'drive'],
       ['hb', 'DRIFT', 'hb', 'drive'],
-      ['boost', '⚡', 'boost', 'drive'],
-      ['e', 'E', 'e', 'drive foot mission'],
+      ['boost', 'NITRO', 'boost nitro', 'drive'],
+      ['boost', 'SPRINT', 'boost sprint', 'foot'],
+      ['e', 'ENTER', 'e', 'drive foot mission'],
       ['horn', 'HORN', 'horn', 'drive foot mission'],
       ['radio', 'RADIO', 'radio', 'drive foot'],
       ['photo', 'PHOTO', 'photo', 'drive foot mission photo'],
-      ['look', 'LOOK', 'look', 'foot'],
       ['jump', 'JUMP', 'jump', 'foot'],
       ['jobs', 'JOBS', 'jobs', 'foot mission'],
       ['shop', 'SHOP', 'shop', 'foot mission'],
@@ -59,11 +75,12 @@ export class Input {
       ['mission', 'START', 'mission', 'mission'],
     ];
     right.innerHTML = buttons
-      .map(([action, label, cls, contexts]) => `<button class="tbtn ${cls}" data-action="${action}" data-contexts="${contexts}">${label}</button>`)
+      .map(([action, label, cls, contexts]) => `<button class="tbtn ${cls}" data-action="${action}" data-contexts="${contexts}" aria-label="${label}">${label}</button>`)
       .join('');
     root.append(left, right);
     this.base = left.querySelector('#stick-base');
     this.knob = left.querySelector('#stick-knob');
+    this.right = right;
     this.buttons = [...right.querySelectorAll('button')];
     this.context = null;
     this.setContext('foot');
@@ -72,6 +89,7 @@ export class Input {
   setContext(context) {
     if (context === this.context) return;
     this.context = context;
+    this.right.dataset.context = context;
     for (const btn of this.buttons) {
       const show = (btn.dataset.contexts || '').split(' ').includes(context);
       btn.hidden = !show;
@@ -163,25 +181,31 @@ export class Input {
   poll() {
     const nav = typeof window !== 'undefined' ? window.navigator : null;
     const pads = nav?.getGamepads ? nav.getGamepads() : null;
-    const pad = pads ? Array.from(pads).find((p) => p && p.connected) : null;
+    let pad = null;
+    if (pads) {
+      for (let i = 0; i < pads.length; i++) {
+        if (pads[i] && pads[i].connected) {
+          pad = pads[i];
+          break;
+        }
+      }
+    }
     this.pad = pad || null;
-    const next = {};
+    const next = this.padNext;
+    for (const [, action] of PAD_BUTTONS) next[action] = false;
     if (!pad) {
       this.padHeld = next;
-      this.padPrev = next;
+      for (const [, action] of PAD_BUTTONS) this.padPrev[action] = false;
       return null;
     }
-    const buttons = {
-      0: 'jump', 1: 'hb', 2: 'horn', 3: 'radio',
-      5: 'boost', 6: 'brake', 7: 'gas', 8: 'look', 9: 'photo',
-    };
-    for (const [index, action] of Object.entries(buttons)) {
+    const prev = this.padPrev;
+    for (const [index, action] of PAD_BUTTONS) {
       const btn = pad.buttons[index];
       const on = !!(btn && (btn.pressed || btn.value > 0.5));
       next[action] = on;
-      if (on && !this.padPrev[action]) this.pressed[action] = true;
+      if (on && !prev[action]) this.pressed[action] = true;
+      prev[action] = on;
     }
-    this.padPrev = next;
     this.padHeld = next;
     return pad;
   }
@@ -193,17 +217,26 @@ export class Input {
 
   // Movement axis: x = steering / strafe, y = forward (+1) / back (-1).
   axis() {
-    if (this.stick.active) return { x: this.stick.x, y: -this.stick.y };
+    const out = this.axisResult;
+    if (this.stick.active) {
+      out.x = this.stick.x;
+      out.y = -this.stick.y;
+      return out;
+    }
     if (this.pad) {
       const axes = this.pad.axes || [];
       const clamp = (v) => Math.max(-1, Math.min(1, v || 0));
       const x = clamp(axes[0]) + (this._padButton(14) ? 1 : 0) - (this._padButton(12) ? 1 : 0);
       const y = -clamp(axes[1]) + (this._padButton(13) ? 1 : 0) - (this._padButton(15) ? 1 : 0);
-      if (Math.abs(x) > 0.12 || Math.abs(y) > 0.12) return { x: clamp(x), y: clamp(y) };
+      if (Math.abs(x) > 0.12 || Math.abs(y) > 0.12) {
+        out.x = clamp(x);
+        out.y = clamp(y);
+        return out;
+      }
     }
-    const x = (this.keys.KeyD || this.keys.ArrowRight ? 1 : 0) - (this.keys.KeyA || this.keys.ArrowLeft ? 1 : 0);
-    const y = (this.keys.KeyW || this.keys.ArrowUp ? 1 : 0) - (this.keys.KeyS || this.keys.ArrowDown ? 1 : 0);
-    return { x, y };
+    out.x = (this.keys.KeyD || this.keys.ArrowRight ? 1 : 0) - (this.keys.KeyA || this.keys.ArrowLeft ? 1 : 0);
+    out.y = (this.keys.KeyW || this.keys.ArrowUp ? 1 : 0) - (this.keys.KeyS || this.keys.ArrowDown ? 1 : 0);
+    return out;
   }
 
   isDown(action) {
@@ -219,12 +252,12 @@ export class Input {
 
   drivingInput() {
     const a = this.axis();
-    return {
-      throttle: Math.max(a.y > 0 ? a.y : 0, this.isDown('gas') ? 1 : 0),
-      brake: Math.max(a.y < 0 ? -a.y : 0, this.isDown('brake') ? 1 : 0),
-      steer: a.x,
-      handbrake: this.isDown('hb'),
-      boost: this.isDown('boost'),
-    };
+    const out = this.driveResult;
+    out.throttle = Math.max(a.y > 0 ? a.y : 0, this.isDown('gas') ? 1 : 0);
+    out.brake = Math.max(a.y < 0 ? -a.y : 0, this.isDown('brake') ? 1 : 0);
+    out.steer = a.x;
+    out.handbrake = this.isDown('hb');
+    out.boost = this.isDown('boost');
+    return out;
   }
 }

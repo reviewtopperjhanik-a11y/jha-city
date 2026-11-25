@@ -327,7 +327,7 @@ export class Missions {
   }
 
   status() {
-    if (!this.active) return 'No active job — J for jobs · G at GARAGE / SHOP / SAFEHOUSE';
+    if (!this.active) return 'No active job';
     const p = this._currentPoint();
     const d = p ? Math.round(this._lastDistance || 0) : 0;
     const cfg = this.active.config;

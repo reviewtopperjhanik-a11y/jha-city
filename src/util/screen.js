@@ -6,7 +6,7 @@ const ndc = new THREE.Vector3();
 
 // Where a world point lands on screen, clamped to an edge when it is outside
 // the view or behind the camera. Pure math so it can be unit-tested without a renderer.
-export function screenMarker(camera, point, width = 1280, height = 720, margin = 64) {
+export function screenMarker(camera, point, width = 1280, height = 720, margin = 64, out = {}) {
   camera.updateMatrixWorld();
   const x = Number(point?.x) || 0;
   const y = (Number(point?.y) || 0) + 2;
@@ -30,11 +30,10 @@ export function screenMarker(camera, point, width = 1280, height = 720, margin =
     sx = clamp(sx, margin, width - margin);
     sy = clamp(sy, margin, height - margin);
   }
-  return {
-    show: !inside,
-    x: sx,
-    y: sy,
-    angle: Math.atan2(sy - height / 2, sx - width / 2),
-    distance: Math.hypot(camera.position.x - x, camera.position.z - z),
-  };
+  out.show = !inside;
+  out.x = sx;
+  out.y = sy;
+  out.angle = Math.atan2(sy - height / 2, sx - width / 2);
+  out.distance = Math.hypot(camera.position.x - x, camera.position.z - z);
+  return out;
 }

@@ -8,6 +8,16 @@ import { clamp, dist2, TAU } from '../util/math.js';
 export const GRID = { N: 7, BLOCK: 130, ROAD: 18, HALF: 455 };
 export const roadLine = (i) => -GRID.HALF + i * GRID.BLOCK;
 
+// Extra facade details must not consume the city's shared RNG, or every later
+// building shifts position. Derive their variation from geometry coordinates.
+function detailUnit(x, z, w, h, salt) {
+  const s = Math.sin(x * 0.31 + z * 0.17 + w * 0.07 + h * 0.03 + salt * 19.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+const detailBetween = (x, z, w, h, salt, min, max) => min + detailUnit(x, z, w, h, salt) * (max - min);
+const detailPick = (x, z, w, h, salt, list) => list[Math.floor(detailUnit(x, z, w, h, salt) * list.length) % list.length];
+const detailRng = (x, z, w, h, salt) => () => detailUnit(x, z, w, h, salt);
+
 const BUILDING_PALETTES = {
   downtown: [C.orchid, C.dusk, C.flamingo, 0x4c3d8f, 0x6a4bb0, 0x8a4f9e],
   strip: [C.coral, C.tangerine, C.amber, 0xd85f6a, 0xb85a8f, 0xe0a060],
@@ -130,6 +140,15 @@ function addMass(chunk, bounds, rng, { x, z, w, d, h, baseY = 0, base, accent, l
       chunk.windows.push(windowQuad(x + w / 2 + 0.06, baseY + h * 0.5, z - d * 0.25, Math.PI / 2, neon2, 0.36, h * 0.6));
     }
   }
+  // Vertical blade signs break up taller facades.
+  if (h > 30 && detailUnit(x, z, w, h, 1) > 0.56) {
+    const sign = new THREE.Color(detailPick(x, z, w, h, 2, [C.coral, C.teal, C.flamingo, C.amber])).multiplyScalar(1.35);
+    chunk.windows.push(windowQuad(x + w / 2 + 0.12, baseY + h * 0.42, z, Math.PI / 2, sign, 1.25, h * 0.42));
+    const bracket = new THREE.BoxGeometry(0.14, 0.14, 2.4);
+    bracket.translate(x + w / 2 + 0.1, baseY + h * 0.56, z);
+    paintSolid(bracket, new THREE.Color(0x3a3a4a), detailRng(x, z, w, h, 3), 0.04);
+    chunk.buildings.push(bracket);
+  }
   if (baseY < 0.5 && w > 18) {
     const door = new THREE.Color(0x0c1320);
     chunk.windows.push(windowQuad(x - w * 0.2, 1.85, z + d / 2 + 0.3, 0, door, 1.7, 2.2));
@@ -193,6 +212,26 @@ function addRoof(chunk, rng, { x, z, w, d, top }, base, accent) {
     paintSolid(mast, new THREE.Color(0xcfd6e6), rng);
     chunk.buildings.push(mast);
   }
+  if (detailUnit(x, z, w, top, 4) > 0.5) {
+    const dx = x + detailBetween(x, z, w, top, 5, -w / 3, w / 3);
+    const dz = z + detailBetween(x, z, w, top, 6, -d / 3, d / 3);
+    const dish = new THREE.CylinderGeometry(1.05, 0.24, 0.3, 10, 1, true);
+    dish.rotateX(detailBetween(x, z, w, top, 7, 0.35, 0.8));
+    dish.translate(dx, top + 1.5, dz);
+    paintSolid(dish, new THREE.Color(0xd8ddea), detailRng(x, z, w, top, 8), 0.08);
+    chunk.buildings.push(dish);
+  }
+  if (detailUnit(x, z, w, top, 9) > 0.55) {
+    const panel = new THREE.BoxGeometry(3.2, 0.1, 1.8);
+    panel.rotateZ(-0.22);
+    panel.translate(
+      x + detailBetween(x, z, w, top, 10, -w / 4, w / 4),
+      top + 1.0,
+      z + detailBetween(x, z, w, top, 11, -d / 4, d / 4),
+    );
+    paintSolid(panel, new THREE.Color(0x254a72), detailRng(x, z, w, top, 12), 0.06);
+    chunk.buildings.push(panel);
+  }
 
   // Glowing parapet band on taller roofs.
   if (top > 22 && rng() > 0.4) {
@@ -233,6 +272,8 @@ function addStorefront(chunk, rng, { x, z, w, d }, accent) {
     paintSolid(awning, bandColor, rng, 0.06);
     chunk.buildings.push(awning);
     chunk.windows.push(windowQuad(f.wx, 1.95, f.wz, f.angle, shopColor, Math.max(3, f.ww), 2.1));
+    const signColor = accent.clone().multiplyScalar(1.5);
+    chunk.windows.push(windowQuad(f.wx, 3.75, f.wz, f.angle, signColor, Math.max(3, f.ww) * 0.72, 0.72));
   }
 }
 
@@ -428,21 +469,69 @@ export function createCity(scene, look) {
   const roadParts = [];
   const markParts = [];
   const sideParts = [];
+  const curbParts = [];
+  const lampParts = [];
+  const lampGlowParts = [];
+  const nearCross = (v) => {
+    for (let k = 0; k <= GRID.N; k++) if (Math.abs(v - roadLine(k)) < 14) return true;
+    return false;
+  };
+  const roadLength = GRID.HALF * 2 + GRID.ROAD;
   for (let i = 0; i <= GRID.N; i++) {
     const p = roadLine(i);
-    const v = new THREE.BoxGeometry(GRID.ROAD, 0.08, GRID.HALF * 2 + GRID.ROAD);
+    const v = new THREE.BoxGeometry(GRID.ROAD, 0.08, roadLength);
     v.translate(p, 0.01, 0);
     roadParts.push(v);
-    const h = new THREE.BoxGeometry(GRID.HALF * 2 + GRID.ROAD, 0.08, GRID.ROAD);
+    const h = new THREE.BoxGeometry(roadLength, 0.08, GRID.ROAD);
     h.translate(0, 0.01, p);
     roadParts.push(h);
+
+    // Raised kerbs on both sides of every road.
+    const kerb = GRID.ROAD / 2 + 0.7;
+    for (const side of [-1, 1]) {
+      const cv = new THREE.BoxGeometry(0.55, 0.3, roadLength);
+      cv.translate(p + side * kerb, 0.14, 0);
+      curbParts.push(cv);
+      const ch = new THREE.BoxGeometry(roadLength, 0.3, 0.55);
+      ch.translate(0, 0.14, p + side * kerb);
+      curbParts.push(ch);
+    }
+
     for (let dd = -GRID.HALF; dd <= GRID.HALF; dd += 16) {
+      if (nearCross(dd)) continue;
       const m1 = new THREE.BoxGeometry(0.28, 0.02, 5);
       m1.translate(p, 0.07, dd);
       markParts.push(m1);
       const m2 = new THREE.BoxGeometry(5, 0.02, 0.28);
       m2.translate(dd, 0.07, p);
       markParts.push(m2);
+    }
+
+    // Street lamps, kept off the intersections and merged into static meshes.
+    for (let d = -GRID.HALF + 30; d <= GRID.HALF - 30; d += 70) {
+      if (nearCross(d)) continue;
+      const side = Math.floor((d + GRID.HALF) / 70) % 2 ? 1 : -1;
+      const lx = p + side * (GRID.ROAD / 2 + 1.5);
+      const pole = new THREE.BoxGeometry(0.22, 5.4, 0.22);
+      pole.translate(lx, 2.7, d);
+      lampParts.push(pole);
+      const arm = new THREE.BoxGeometry(1.7, 0.16, 0.16);
+      arm.translate(lx - side * 0.85, 5.3, d);
+      lampParts.push(arm);
+      const head = new THREE.BoxGeometry(0.62, 0.12, 0.34);
+      head.translate(lx - side * 1.55, 5.15, d);
+      lampGlowParts.push(head);
+
+      const lz = p + side * (GRID.ROAD / 2 + 1.5);
+      const hpole = new THREE.BoxGeometry(0.22, 5.4, 0.22);
+      hpole.translate(d, 2.7, lz);
+      lampParts.push(hpole);
+      const harm = new THREE.BoxGeometry(0.16, 0.16, 1.7);
+      harm.translate(d, 5.3, lz - side * 0.85);
+      lampParts.push(harm);
+      const hhead = new THREE.BoxGeometry(0.34, 0.12, 0.62);
+      hhead.translate(d, 5.15, lz - side * 1.55);
+      lampGlowParts.push(hhead);
     }
   }
   for (let i = 0; i < GRID.N; i++) {
@@ -452,14 +541,34 @@ export function createCity(scene, look) {
       const s = new THREE.BoxGeometry(GRID.BLOCK - GRID.ROAD - 2, 0.18, GRID.BLOCK - GRID.ROAD - 2);
       s.translate(cx, 0.06, cz);
       sideParts.push(s);
+
+      // Zebra crossings on all four approaches to each junction.
+      const ix = roadLine(i);
+      const iz = roadLine(j);
+      for (let stripe = -3; stripe <= 3; stripe++) {
+        const off = stripe * 2.2;
+        const sv = new THREE.BoxGeometry(0.9, 0.025, GRID.ROAD * 0.76);
+        sv.translate(ix + off, 0.075, iz);
+        markParts.push(sv);
+        const sh = new THREE.BoxGeometry(GRID.ROAD * 0.76, 0.025, 0.9);
+        sh.translate(ix, 0.075, iz + off);
+        markParts.push(sh);
+      }
     }
   }
   const roadMesh = new THREE.Mesh(mergeOrNull(roadParts), toon(C.road));
   const markMesh = new THREE.Mesh(mergeOrNull(markParts), new THREE.MeshBasicMaterial({ color: C.lane, toneMapped: false }));
   const sideMesh = new THREE.Mesh(mergeOrNull(sideParts), toon(C.sidewalk));
+  const curbMesh = new THREE.Mesh(mergeOrNull(curbParts), toon(0x8c849c));
+  const lampMesh = new THREE.Mesh(mergeOrNull(lampParts), toon(0x39405e));
+  const lampGlowMesh = new THREE.Mesh(
+    mergeOrNull(lampGlowParts),
+    new THREE.MeshBasicMaterial({ color: 0xffd9a0, toneMapped: false }),
+  );
   roadMesh.receiveShadow = true;
   sideMesh.receiveShadow = true;
-  root.add(roadMesh, markMesh, sideMesh);
+  curbMesh.receiveShadow = true;
+  root.add(roadMesh, markMesh, sideMesh, curbMesh, lampMesh, lampGlowMesh);
 
   for (let i = 0; i < GRID.N; i++) {
     for (let j = 0; j < GRID.N; j++) {
@@ -590,18 +699,87 @@ export function createCity(scene, look) {
       : { x: along, z: roadLine(idx), axis: 'x', line: idx };
   }
 
+  // Collision probes run many times per frame. Results are pooled in a small
+  // ring so nested probes (main move + two wall slides) never share one object.
+  const collideResults = Array.from({ length: 8 }, () => ({ x: 0, z: 0, hit: false }));
+  let collideNext = 0;
   function collide(x, z, radius) {
+    const out = collideResults[collideNext];
+    collideNext = (collideNext + 1) % collideResults.length;
+    out.x = x;
+    out.z = z;
+    out.hit = false;
     for (const b of bounds) {
       const dx = x - b.x;
       const dz = z - b.z;
       const px = b.hw + radius - Math.abs(dx);
       const pz = b.hd + radius - Math.abs(dz);
       if (px > 0 && pz > 0) {
-        if (px < pz) return { x: b.x + Math.sign(dx || 1) * (b.hw + radius), z, hit: true };
-        return { x, z: b.z + Math.sign(dz || 1) * (b.hd + radius), hit: true };
+        out.hit = true;
+        if (px < pz) out.x = b.x + Math.sign(dx || 1) * (b.hw + radius);
+        else out.z = b.z + Math.sign(dz || 1) * (b.hd + radius);
+        return out;
       }
     }
-    return { x, z, hit: false };
+    return out;
+  }
+
+  // Analytic segment/box intersection used by the chase camera. Returns the
+  // fraction along from->to where the first building starts (1 = clear).
+  function cameraRay(from, to, pad = 0.55) {
+    let best = 1;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    for (const b of bounds) {
+      let tmin = 0;
+      let tmax = 1;
+      let t1;
+      let t2;
+      let min;
+      let max;
+
+      min = b.x - b.hw - pad;
+      max = b.x + b.hw + pad;
+      if (Math.abs(dx) < 0.00001) {
+        if (from.x < min || from.x > max) continue;
+      } else {
+        t1 = (min - from.x) / dx;
+        t2 = (max - from.x) / dx;
+        if (t1 > t2) { const swap = t1; t1 = t2; t2 = swap; }
+        tmin = Math.max(tmin, t1);
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) continue;
+      }
+
+      min = 0;
+      max = b.h + pad;
+      if (Math.abs(dy) < 0.00001) {
+        if (from.y < min || from.y > max) continue;
+      } else {
+        t1 = (min - from.y) / dy;
+        t2 = (max - from.y) / dy;
+        if (t1 > t2) { const swap = t1; t1 = t2; t2 = swap; }
+        tmin = Math.max(tmin, t1);
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) continue;
+      }
+
+      min = b.z - b.hd - pad;
+      max = b.z + b.hd + pad;
+      if (Math.abs(dz) < 0.00001) {
+        if (from.z < min || from.z > max) continue;
+      } else {
+        t1 = (min - from.z) / dz;
+        t2 = (max - from.z) / dz;
+        if (t1 > t2) { const swap = t1; t1 = t2; t2 = swap; }
+        tmin = Math.max(tmin, t1);
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) continue;
+      }
+      if (tmin < best) best = Math.max(0, tmin);
+    }
+    return best;
   }
 
   // Snap a stuck car or an unsafe exit point back to the nearest road centre.
@@ -619,5 +797,5 @@ export function createCity(scene, look) {
     }
   }
 
-  return { root, bounds, chunks, landmarks, update, collide, nearestRoad, randomRoadPoint, GRID, roadLine };
+  return { root, bounds, chunks, landmarks, update, collide, cameraRay, nearestRoad, randomRoadPoint, GRID, roadLine };
 }

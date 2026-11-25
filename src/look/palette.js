@@ -16,6 +16,13 @@ export const C = {
   leaf: 0x3d7d5c,
 };
 
+// Shared by owned cars, traffic and police paint jobs. Everything stays in the
+// sunset/neon family rather than drifting into flat greys.
+export const CAR_COLORS = [
+  C.flamingo, C.teal, C.amber, C.coral, C.tangerine, C.dusk,
+  C.orchid, 0x4cc9b0, 0xffd166, 0x6c8cff, 0xe8e8f0, 0x141827,
+];
+
 export const DISTRICTS = {
   beach: { base: C.sand, accent: C.teal, height: [8, 22], palm: true },
   downtown: { base: C.orchid, accent: C.flamingo, height: [28, 95], palm: false },

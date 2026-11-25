@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Vehicle } from '../entities/vehicle.js';
-import { C } from '../look/palette.js';
+import { C, CAR_COLORS } from '../look/palette.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
 import { clamp, damp, dist2 } from '../util/math.js';
 
-const carColors = [C.amber, C.teal, C.coral, C.tangerine, C.dusk, C.flamingo, 0xe8e8f0];
+const carColors = CAR_COLORS;
 
 function paintGeo(g, color, variance = 0.08) {
   const c = color.clone().multiplyScalar(0.94 + Math.random() * variance);

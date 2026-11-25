@@ -52,6 +52,22 @@ export class Menu {
     for (const el of this.body.querySelectorAll(selector)) el.addEventListener(event, handler);
   }
 
+  showQuick(entries) {
+    const cards = entries.map((entry) => `<button class="menu-item" data-quick="${entry.key}">
+      <span class="menu-item-title">${entry.label}</span>
+      ${entry.sub ? `<span class="menu-item-sub">${entry.sub}</span>` : ''}
+    </button>`).join('');
+    this._show('CITY MENU', `
+      <div class="menu-label">QUICK ACTIONS</div>
+      <div class="menu-grid">${cards}</div>
+      <div class="menu-note">Swipe the right half of the screen to look around.</div>`);
+    this._on('[data-quick]', 'click', (e) => {
+      const entry = entries.find((item) => item.key === e.currentTarget.dataset.quick);
+      this.close();
+      entry?.run();
+    });
+  }
+
   showJobs(missions, onStart, onStory) {
     const step = Math.min(missions.storyStep, 3) + 1;
     const cards = missions.jobTypes.map((type) => {

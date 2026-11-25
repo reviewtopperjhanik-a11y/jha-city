@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { C } from '../look/palette.js';
+import { C, CAR_COLORS } from '../look/palette.js';
 import { Vehicle } from '../entities/vehicle.js';
 import { makeRng } from '../util/rng.js';
 import { dist2 } from '../util/math.js';
 
-export const PAINT_COLORS = [C.flamingo, C.teal, C.amber, C.coral, C.tangerine, 0xe8e8f0, 0x141827];
+export const PAINT_COLORS = CAR_COLORS;
 
 export const PRICES = {
   bike: 4200,
