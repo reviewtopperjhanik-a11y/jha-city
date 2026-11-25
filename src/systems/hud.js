@@ -15,7 +15,7 @@ export class Hud {
         <div class="hud-card" id="hud-mode">ON FOOT</div>
       </div>
       <div class="toast" id="hud-toast"></div>
-      <div class="hint">WASD / stick · W GAS · S BRAKE · SPACE DRIFT/JUMP · SHIFT BOOST · E ENTER/EXIT · M DELIVERY · R RACE · T TAXI · P POLICE</div>
+      <div class="hint">WASD / stick · W GAS · S BRAKE · SPACE DRIFT/JUMP · SHIFT BOOST · E ENTER/EXIT · M DELIVERY · R RACE · T TAXI · N DAY/NIGHT · P BRIBE</div>
     `;
     root.append(el);
     this.money = el.querySelector('#hud-money');

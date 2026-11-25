@@ -107,7 +107,8 @@ export class Vehicle {
 
     const grip = clamp(Math.abs(this.speed) / 9, 0.12, 1);
     const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (input.handbrake ? 1.5 : 1);
-    this.heading += (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1);
+    // Screen-right is world -x for a chase camera behind the vehicle: invert steer.
+    this.heading -= (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1);
 
     const nx = this.pos.x + Math.sin(this.heading) * this.speed * dt;
     const nz = this.pos.z + Math.cos(this.heading) * this.speed * dt;
@@ -131,7 +132,7 @@ export class Vehicle {
   _sync(dt, steer = 0, boosting = false, handbrake = false, brake = 0, throttle = 0) {
     this.mesh.position.copy(this.pos);
     this.mesh.rotation.y = this.heading;
-    const lean = -steer * clamp(Math.abs(this.speed) / 22, 0, 1) * (this.type === 'bike' ? 0.42 : 0.13);
+    const lean = steer * clamp(Math.abs(this.speed) / 22, 0, 1) * (this.type === 'bike' ? 0.42 : 0.13);
     this.mesh.rotation.z = damp(this.mesh.rotation.z, lean, 8, dt || 0.016);
     const pitch = this.type === 'bike'
       ? (boosting && throttle > 0.4 ? -0.16 : brake > 0.5 ? 0.12 : 0)

@@ -33,6 +33,8 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Jump (on foot) | Space | JUMP |
 | Sprint (on foot) | Shift | BOOST |
 | Camera | C | CAM |
+| Toggle day / night | N | D/N |
+| Bribe police ($500) | P | — |
 
 ## Goals
 

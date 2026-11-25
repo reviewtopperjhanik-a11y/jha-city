@@ -1,4 +1,4 @@
-const KEY = 'jha-city-save-v1';
+const KEY = 'jha-city-save-v2';
 
 const DEFAULTS = {
   money: 2500,
@@ -7,7 +7,7 @@ const DEFAULTS = {
   z: 40,
   bikeUpgraded: false,
   carUpgraded: false,
-  hours: 18.4,
+  hours: 8.0,
 };
 
 export function loadSave() {

@@ -27,8 +27,9 @@ look.resize(window.innerWidth, window.innerHeight);
 
 const world = createCity(scene, look);
 const save = loadSave();
-const sessionStartHours = save.hours;
-const currentHours = () => (sessionStartHours + gameTime * 0.03) % 24;
+let sessionStartHours = save.hours;
+// ~6 min of day followed by ~5 min of night, then repeat.
+const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
 const input = new Input(ui);
 const audio = new GameAudio();
 const hud = new Hud(ui);
@@ -126,6 +127,13 @@ function handleActions() {
   if (input.consume('cam')) {
     camIndex = (camIndex + 1) % camDistances.length;
     hud.toast(`CAMERA ${camIndex + 1}`);
+  }
+  if (input.consume('time')) {
+    const h = currentHours();
+    const night = h >= 7 && h < 19;
+    sessionStartHours = night ? 23 : 12;
+    gameTime = 0;
+    hud.toast(night ? 'NIGHT MODE' : 'DAY MODE');
   }
 }
 

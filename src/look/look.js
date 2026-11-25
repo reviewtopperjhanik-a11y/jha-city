@@ -73,7 +73,7 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dpr));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.15;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -101,7 +101,7 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.72, 0.65, 0.7);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.55, 0.6, 0.8);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
@@ -112,31 +112,32 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     state.hours = ((hours % 24) + 24) % 24;
     const angle = ((state.hours - 6) / 24) * TAU;
     const elev = Math.sin(angle);
-    const day = clamp(elev * 1.6 + 0.25, 0, 1);
+    const day = clamp(elev * 1.5 + 0.35, 0.15, 1);
     state.day = day;
-    const dir = new THREE.Vector3(Math.cos(angle) * 180, Math.max(elev, -0.25) * 180, 70).normalize();
+    // Keep a soft "moon" above the horizon at night so the city stays readable.
+    const dir = new THREE.Vector3(Math.cos(angle) * 180, Math.max(elev, 0.18) * 180, 70).normalize();
     sun.position.copy(dir).multiplyScalar(220);
     sun.target.position.set(0, 0, 0);
     u.sunDir.value.copy(dir);
 
     const horizon = elev > 0
-      ? mix(C.ink, mix(C.flamingo, C.tangerine, smooth(clamp(elev * 2, 0, 1))), day)
-      : mix(C.ink, C.orchid, clamp(1 + elev * 2, 0, 1));
-    const top = mix(C.ink, C.dusk, day);
-    const skyLight = mix(C.dusk, 0xa9d7ff, day * 0.85);
-    const ground = mix(C.ink, C.sand, day * 0.5);
+      ? mix(0x2b2a5e, mix(C.flamingo, C.tangerine, smooth(clamp(elev * 2, 0, 1))), day)
+      : mix(0x232a55, C.orchid, clamp(0.35 + elev * 0.15, 0, 0.55));
+    const top = mix(0x141a3d, C.dusk, day);
+    const skyLight = elev > 0 ? mix(0x6f86d6, 0xa9d7ff, day) : 0x7d91d8;
+    const ground = mix(0x303a5a, C.sand, day * 0.55);
 
     u.horizonColor.value.copy(horizon);
     u.topColor.value.copy(top);
-    u.bottomColor.value.copy(mix(C.ink, horizon, 0.25));
-    u.sunColor.value.copy(mix(C.amber, 0xfff3d0, day));
+    u.bottomColor.value.copy(mix(0x111738, horizon, 0.45));
+    u.sunColor.value.copy(elev > 0 ? mix(C.amber, 0xfff3d0, day) : 0xb9c8ff);
     hemi.color.copy(skyLight);
     hemi.groundColor.copy(ground);
-    hemi.intensity = 0.35 + day * 0.75;
-    sun.color.copy(mix(C.tangerine, 0xffeed6, day));
-    sun.intensity = 0.15 + day * 2.0;
+    hemi.intensity = 0.7 + day * 0.55;
+    sun.color.copy(elev > 0 ? mix(C.tangerine, 0xffeed6, day) : 0xa8bdff);
+    sun.intensity = 0.4 + day * 1.7;
     scene.fog.color.copy(horizon);
-    scene.fog.density = 0.0011 + (1 - day) * 0.0005;
+    scene.fog.density = 0.00085 + (1 - day) * 0.00025;
   }
 
   function resize(w, h) {

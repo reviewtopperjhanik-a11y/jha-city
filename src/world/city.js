@@ -148,25 +148,36 @@ export function createCity(scene, look) {
         chunk.buildings.push(bg);
         bounds.push({ x: bx, z: bz, hw: w / 2 + 1.2, hd: d / 2 + 1.2, h });
 
-        const neon = [C.amber, C.coral, C.teal, C.tangerine, C.flamingo, C.lane];
+        // Steady, patterned windows: no random flicker and no rainbow of colours.
+        const litColors = [C.amber, C.tangerine, C.lane];
+        const pattern = randInt(rng, 0, 4);
+        const litColor = new THREE.Color(pick(rng, litColors));
         const addWindow = (x, y, z, angle) => {
           const wg = new THREE.PlaneGeometry(1.5, 1.05);
           const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle, 0));
           const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
           wg.applyMatrix4(m);
-          const c = new THREE.Color(pick(rng, neon)).multiplyScalar(rand(rng, 1.4, 2.4));
+          const c = litColor.clone().multiplyScalar(1.0 + rng() * 0.3);
           colorAttr(wg, [c.r, c.g, c.b, c.r, c.g, c.b, c.r, c.g, c.b, c.r, c.g, c.b]);
           chunk.windows.push(wg);
         };
-        for (let y = 4; y < h - 2; y += 4.2) {
-          for (let o = -w / 2 + 2.5; o < w / 2 - 1; o += 3.4) {
-            if (rng() > 0.35) addWindow(bx + o, y, bz + d / 2 + 0.04, 0);
-            if (rng() > 0.35) addWindow(bx + o, y, bz - d / 2 - 0.04, Math.PI);
+        let row = 0;
+        for (let y = 4; y < h - 2; y += 4.4) {
+          let col = 0;
+          for (let o = -w / 2 + 2.5; o < w / 2 - 1; o += 4.0) {
+            const lit = (row + col + pattern) % 5 < 2;
+            if (lit) addWindow(bx + o, y, bz + d / 2 + 0.04, 0);
+            if (lit) addWindow(bx + o, y, bz - d / 2 - 0.04, Math.PI);
+            col++;
           }
-          for (let o = -d / 2 + 2.5; o < d / 2 - 1; o += 3.4) {
-            if (rng() > 0.35) addWindow(bx + w / 2 + 0.04, y, bz + o, Math.PI / 2);
-            if (rng() > 0.35) addWindow(bx - w / 2 - 0.04, y, bz + o, -Math.PI / 2);
+          col = 0;
+          for (let o = -d / 2 + 2.5; o < d / 2 - 1; o += 4.0) {
+            const lit = (row + col + pattern) % 5 < 2;
+            if (lit) addWindow(bx + w / 2 + 0.04, y, bz + o, Math.PI / 2);
+            if (lit) addWindow(bx - w / 2 - 0.04, y, bz + o, -Math.PI / 2);
+            col++;
           }
+          row++;
         }
       }
 

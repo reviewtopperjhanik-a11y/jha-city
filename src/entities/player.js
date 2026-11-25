@@ -94,8 +94,9 @@ export class Player {
     const az = len > 1 ? a.y / len : a.y;
     const fx = Math.sin(cameraYaw);
     const fz = Math.cos(cameraYaw);
-    const rx = fz;
-    const rz = -fx;
+    // Screen-right is world -x for this chase camera, so strafe uses the flipped right vector.
+    const rx = -fz;
+    const rz = fx;
     const mx = fx * az + rx * ax;
     const mz = fz * az + rz * ax;
     const moving = Math.hypot(mx, mz) > 0.05;
