@@ -42,10 +42,26 @@ Quality starts on **AUTO**; it drops pixel density, bloom and shadows when the f
 sags, and slowly raises them again when there is headroom. Pick HIGH / MEDIUM / LOW in the
 ⚙ panel to lock a level. Settings are saved automatically.
 
+## Police & wanted level
+
+Reckless driving or hitting a pedestrian starts a chase. Stars escalate with repeated crimes:
+
+- **1–2 stars:** one or two cruisers follow and cut you off; slow down and officers deploy on foot.
+- **3 stars:** roadblocks appear ahead on the road, with barriers and waiting officers.
+- **4–5 stars:** an air unit joins with a searchlight; more cruisers and a second roadblock at 5.
+
+Break line of sight and stay hidden to drain the search meter and lose a star. On foot you
+lose heat faster than inside a car. The map shows the last-known search circle, cruiser dots
+and foot-officer dots. `P` pays a $500 bribe when you have enough cash.
+
+Getting caught shows a **BUSTED** screen, deducts a fine based on your stars and respawns you
+at the downtown precinct. Sirens are distance-based and pan with the nearest cruiser; the
+helicopter adds a low rotor hum.
+
 ## Goals
 
 - Bike, car and on-foot play from the first playable build
-- Procedural city with day/night, traffic, pedestrians, wanted stars and police
+- Procedural city with day/night, traffic, pedestrians and dynamic police pursuit
 - Delivery, street race and taxi missions
 - 30 FPS target on mid-range phones (DPR cap, instancing, quality tiers)
 

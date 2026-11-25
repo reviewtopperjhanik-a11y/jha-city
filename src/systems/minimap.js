@@ -71,6 +71,7 @@ export class Minimap {
         <span><i class="dot job"></i>JOB</span>
         <span><i class="dot wp"></i>WAYPOINT</span>
         <span><i class="dot cop"></i>POLICE</span>
+        <span><i class="dot search"></i>SEARCH</span>
         <button class="map-clear" hidden>CLR WP</button>
       </div>
       <div class="map-tip">TAP MAP TO SET WAYPOINT · DRAG TO PAN · PINCH OR +/− TO ZOOM</div>`;
@@ -427,15 +428,35 @@ export class Minimap {
     c.restore();
   }
 
-  _drawMarkers(c, S, view, player, missions, police, waypoint) {
+  _drawMarkers(c, S, view, player, missions, police, wanted, waypoint) {
     const toX = (v) => this._toPx(v, view.cx, S, view);
     const toY = (v) => this._toPx(v, view.cz, S, view);
     const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.005);
     const px = toX(player.pos.x);
     const py = toY(player.pos.z);
+    const cars = Array.isArray(police) ? police : police?.cars || [];
+    const officers = Array.isArray(police) ? [] : police?.officers || [];
+    const search = wanted?.search || null;
     const job = missions.active ? missions.active.points[missions.active.index] : null;
     const jobPos = job ? this._clampPoint(toX(job.x), toY(job.z), S) : null;
     const wp = waypoint ? this._clampPoint(toX(waypoint.x), toY(waypoint.z), S) : null;
+
+    if (search) {
+      const sx = toX(search.x);
+      const sy = toY(search.z);
+      const sr = Math.max(6, search.r * (S / (view.range * 2)));
+      c.save();
+      c.fillStyle = 'rgba(255,51,85,0.08)';
+      c.strokeStyle = 'rgba(255,51,85,0.5)';
+      c.lineWidth = Math.max(1.2, S * 0.0025);
+      c.setLineDash([S * 0.01, S * 0.014]);
+      c.beginPath();
+      c.arc(sx, sy, sr, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+      c.setLineDash([]);
+      c.restore();
+    }
 
     // Dashed route lines sit under the markers.
     if (jobPos) this._routeLine(c, px, py, jobPos.x, jobPos.y, 'rgba(255,169,72,0.5)', S);
@@ -486,7 +507,7 @@ export class Minimap {
     }
 
     const flash = Math.floor(performance.now() * 0.006) % 2 === 0;
-    for (const v of police) {
+    for (const v of cars) {
       const x = toX(v.pos.x);
       const y = toY(v.pos.z);
       if (x < 0 || x > S || y < 0 || y > S) continue;
@@ -501,6 +522,18 @@ export class Minimap {
       c.beginPath();
       c.arc(x, y, S * 0.004, 0, Math.PI * 2);
       c.fill();
+    }
+    for (const o of officers) {
+      const x = toX(o.x);
+      const y = toY(o.z);
+      if (x < 0 || x > S || y < 0 || y > S) continue;
+      c.fillStyle = '#ffd9a0';
+      c.strokeStyle = 'rgba(12,13,27,0.8)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.arc(x, y, S * 0.007, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
     }
 
     c.save();
@@ -562,18 +595,18 @@ export class Minimap {
     }
     c.clearRect(0, 0, S, S);
     c.drawImage(this.baseBig, 0, 0);
-    this._drawMarkers(c, S, view, this.last.player, this.last.missions, this.last.police, this.waypoint);
+    this._drawMarkers(c, S, view, this.last.player, this.last.missions, this.last.police, this.last.wanted, this.waypoint);
   }
 
-  update(player, world, missions, police) {
+  update(player, world, missions, police, wanted) {
     this.world = world;
     this.baseRange = world.GRID.HALF + world.GRID.ROAD;
-    this.last = { player, missions, police };
+    this.last = { player, missions, police, wanted };
 
     const S = this.small.width;
     const view = { cx: player.pos.x, cz: player.pos.z, range: 165 };
     this._drawBase(this.ctxSmall, S, view, world, true);
-    this._drawMarkers(this.ctxSmall, S, view, player, missions, police, this.waypoint);
+    this._drawMarkers(this.ctxSmall, S, view, player, missions, police, wanted, this.waypoint);
     if (this.isOpen) {
       this._drawLarge();
       this._updateWaypointUI();

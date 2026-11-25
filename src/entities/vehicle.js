@@ -143,21 +143,49 @@ export class Vehicle {
 
   setPolice() {
     if (this.policeLights) return;
+    const white = mat(0xe8e8f0, this.look);
+    const dark = mat(0x141827, this.look);
+
+    // White door panels and a hood stripe make the cruiser read as a police car
+    // even when the light bar is off.
+    const doorGeo = g('policeDoor', () => new THREE.BoxGeometry(0.035, 0.5, 1.55));
+    for (const x of [-1.22, 1.22]) {
+      const door = new THREE.Mesh(doorGeo, white);
+      door.position.set(x, 1.02, 0.12);
+      this.mesh.add(door);
+    }
+    const hood = new THREE.Mesh(g('policeHood', () => new THREE.BoxGeometry(0.92, 0.035, 1.25)), white);
+    hood.position.set(0, 1.245, 1.45);
+    const trunk = new THREE.Mesh(g('policeTrunk', () => new THREE.BoxGeometry(0.92, 0.035, 0.8)), white);
+    trunk.position.set(0, 1.245, -1.55);
+    this.mesh.add(hood, trunk);
+
+    // Push bar.
+    const barGeo = g('policePush', () => new THREE.BoxGeometry(1.85, 0.15, 0.15));
+    const push = new THREE.Mesh(barGeo, dark);
+    push.position.set(0, 0.74, 2.52);
+    this.mesh.add(push);
+    for (const x of [-0.65, 0.65]) {
+      const upright = new THREE.Mesh(g('policePushUp', () => new THREE.BoxGeometry(0.13, 0.62, 0.13)), dark);
+      upright.position.set(x, 0.62, 2.52);
+      this.mesh.add(upright);
+    }
+
     const barRed = new THREE.Mesh(
-      g('policeRed', () => new THREE.BoxGeometry(0.5, 0.16, 0.24)),
+      g('policeRed', () => new THREE.BoxGeometry(0.62, 0.18, 0.3)),
       new THREE.MeshBasicMaterial({ color: 0xff2b4d, toneMapped: false }),
     );
-    barRed.position.set(-0.28, 1.98, -0.18);
+    barRed.position.set(-0.34, 2.0, -0.14);
     const barBlue = new THREE.Mesh(
-      g('policeBlue', () => new THREE.BoxGeometry(0.5, 0.16, 0.24)),
+      g('policeBlue', () => new THREE.BoxGeometry(0.62, 0.18, 0.3)),
       new THREE.MeshBasicMaterial({ color: 0x3a7bff, toneMapped: false }),
     );
-    barBlue.position.set(0.28, 1.98, -0.18);
+    barBlue.position.set(0.34, 2.0, -0.14);
     const barBase = new THREE.Mesh(
-      g('policeBar', () => new THREE.BoxGeometry(1.3, 0.08, 0.34)),
+      g('policeBar', () => new THREE.BoxGeometry(1.55, 0.09, 0.4)),
       new THREE.MeshBasicMaterial({ color: 0x141827 }),
     );
-    barBase.position.set(0, 1.9, -0.18);
+    barBase.position.set(0, 1.9, -0.14);
     this.mesh.add(barBase, barRed, barBlue);
     this.policeLights = [barRed, barBlue];
   }

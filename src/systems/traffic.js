@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Vehicle } from '../entities/vehicle.js';
 import { C } from '../look/palette.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
-import { clamp, dist2, angleLerp, wrapAngle } from '../util/math.js';
+import { clamp, dist2 } from '../util/math.js';
 
 const carColors = [C.amber, C.teal, C.coral, C.tangerine, C.dusk, C.flamingo, 0xe8e8f0];
 
@@ -111,6 +111,8 @@ export class Traffic {
     this.rng = makeRng(7712);
     this.onCrime = callbacks.crime || (() => {});
     this.vehicles = [];
+    // Kept as an empty array for save/debug callers that expect the old shape;
+    // pursuit vehicles now live in systems/police.js.
     this.police = [];
     this.peds = [];
     this.crimeCooldown = 0;
@@ -164,9 +166,6 @@ export class Traffic {
       addPed(x, z);
     }
     this.crimeGrace = 6;
-    this.policeDelay = 0;
-    this.policeActive = false;
-    this.sirenTime = 0;
   }
 
   get enterables() {
@@ -217,36 +216,6 @@ export class Traffic {
   _nearestLine(v) {
     const i = Math.round((v + this.world.GRID.HALF) / this.world.GRID.BLOCK);
     return clamp(i, 0, this.world.GRID.N);
-  }
-
-  _chase(v, dt, player) {
-    const dx = player.pos.x - v.pos.x;
-    const dz = player.pos.z - v.pos.z;
-    const d = Math.hypot(dx, dz) || 1;
-    const target = Math.atan2(dx, dz);
-
-    // Look ahead and steer around buildings or other police cars instead of
-    // grinding against the same wall forever.
-    const look = Math.max(5, Math.abs(v.speed) * 0.35);
-    let steerTo = target;
-    for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6]) {
-      const h = target + off;
-      const px = v.pos.x + Math.sin(h) * look;
-      const pz = v.pos.z + Math.cos(h) * look;
-      if (this.world.collide(px, pz, 1.15).hit) continue;
-      if (this.police.some((o) => o !== v && dist2(px, pz, o.pos.x, o.pos.z) < 4.2)) continue;
-      steerTo = h;
-      break;
-    }
-    v.heading = wrapAngle(angleLerp(v.heading, steerTo, 1 - Math.exp(-3.6 * dt)));
-
-    const blocked = Math.abs(v.speed) < 1.5 && d > 8;
-    v.stuckTime = blocked ? (v.stuckTime || 0) + dt : Math.max(0, (v.stuckTime || 0) - dt * 2);
-    if (v.stuckTime > 2.2) {
-      v.recover(this.world, Math.atan2(dx, dz));
-    }
-
-    v.applyInput(dt, { throttle: d > 9 ? 1 : 0.25, brake: d < 7 ? 0.4 : 0, steer: 0, handbrake: false, boost: d > 40 }, this.world);
   }
 
   _resolvePlayerCollision(v, player) {
@@ -305,64 +274,6 @@ export class Traffic {
     v._sync(0);
   }
 
-  _updatePolice(dt, player, wanted) {
-    // Police only exist after a crime. No patrol cars follow the player at spawn.
-    if (wanted <= 0) {
-      if (this.policeActive) {
-        for (const v of this.police) {
-          v.setVisible(false);
-          this.scene.remove(v.mesh);
-          const i = this.vehicles.indexOf(v);
-          if (i >= 0) this.vehicles.splice(i, 1);
-        }
-        this.police.length = 0;
-      }
-      this.policeActive = false;
-      this.policeDelay = 0;
-      return;
-    }
-    if (!this.policeActive) {
-      this.policeActive = true;
-      this.policeDelay = 2.4;
-    }
-    this.policeDelay = Math.max(0, this.policeDelay - dt);
-    const need = Math.min(wanted + 1, 4);
-
-    if (this.policeDelay <= 0) {
-      while (this.police.length < need) {
-        let p = this.world.randomRoadPoint(this.rng);
-        for (let tries = 0; tries < 10; tries++) {
-          if (dist2(p.x, p.z, player.pos.x, player.pos.z) > 95) break;
-          p = this.world.randomRoadPoint(this.rng);
-        }
-        const heading = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
-        const v = new Vehicle(this.scene, this.look, 'car', p.x, p.z, heading, C.ink);
-        v.role = 'police';
-        v.ai = true;
-        v.targetSpeed = 20;
-        v.setPolice();
-        this.police.push(v);
-        this.vehicles.push(v);
-      }
-    }
-    while (this.police.length > need) {
-      const v = this.police.pop();
-      v.setVisible(false);
-      this.scene.remove(v.mesh);
-      const i = this.vehicles.indexOf(v);
-      if (i >= 0) this.vehicles.splice(i, 1);
-    }
-    this.sirenTime += dt;
-    const flash = Math.floor(this.sirenTime * 5) % 2 === 0;
-    for (const v of this.police) {
-      if (v.policeLights) {
-        v.policeLights[0].visible = flash;
-        v.policeLights[1].visible = !flash;
-      }
-      this._chase(v, dt, player);
-    }
-  }
-
   _updatePeds(dt, player, wanted) {
     for (let i = 0; i < this.peds.length; i++) {
       const p = this.peds[i];
@@ -406,9 +317,9 @@ export class Traffic {
       p.mesh.position.set(p.x, bob, p.z);
       p.mesh.rotation.y = p.heading;
       p.mesh.rotation.z = Math.sin(p.phase * 0.5) * 0.035;
-      if (d < 2.2 && !player.vehicle && wanted > 0 && this.crimeCooldown <= 0 && this.crimeGrace <= 0) {
+      if (d < 1.7 && !player.vehicle && player.speed > 3 && this.crimeCooldown <= 0 && this.crimeGrace <= 0) {
         this.onCrime('ped');
-        this.crimeCooldown = 2.5;
+        this.crimeCooldown = 6;
       }
     }
   }
@@ -430,7 +341,6 @@ export class Traffic {
         }
       }
     }
-    this._updatePolice(dt, player, wanted);
     this._updatePeds(dt, player, wanted);
     // Resolve car-to-car contact after everyone has moved, so a parked car is
     // also shoved and its mesh follows the new position.

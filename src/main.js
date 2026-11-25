@@ -7,6 +7,7 @@ import { GameAudio } from './core/audio.js';
 import { loadSave, saveGame } from './core/save.js';
 import { Player } from './entities/player.js';
 import { Traffic } from './systems/traffic.js';
+import { Police } from './systems/police.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
 import { Hud } from './systems/hud.js';
@@ -56,9 +57,13 @@ const player = new Player(scene, look, save.x, save.z);
 player.onNotice = (msg) => hud.toast(msg);
 
 const wanted = new Wanted();
+const police = new Police(scene, look, world, {
+  onBusted: () => beginBusted(),
+  toast: (msg) => hud.toast(msg),
+});
 const traffic = new Traffic(scene, look, world, {
   crime: (kind) => {
-    wanted.crime(1, gameTime);
+    wanted.crime(1, gameTime, player.pos.x, player.pos.z);
     hud.toast(kind === 'ped' ? 'WITNESS CALLED THE COPS!' : 'RECKLESS DRIVING!');
   },
 });
@@ -70,8 +75,12 @@ const missions = new Missions(scene, world, {
   toast: (msg) => hud.toast(msg),
 });
 
-wanted.onChange = (stars) => {
-  hud.toast(stars === 0 ? 'YOU LOST THEM' : `${stars} STAR WANTED`);
+wanted.onChange = (stars, before) => {
+  if (stars === 0) hud.toast('YOU LOST THEM');
+  else if (stars === 5) hud.toast('MAXIMUM WANTED — ALL UNITS');
+  else if (stars === 4) hud.toast('4 STAR WANTED — AIR UNIT INBOUND');
+  else if (stars > before) hud.toast(`${stars} STAR WANTED`);
+  else hud.toast(`WANTED DOWN TO ${stars}`);
 };
 
 // Start on the bike; E puts you on foot, E again carjacks the nearest car.
@@ -160,7 +169,8 @@ function handleActions() {
   if (input.consume('bribe')) {
     if (wanted.stars > 0 && save.money >= 500) {
       save.money -= 500;
-      wanted.clear();
+      wanted.clear(true);
+      police.clearAll();
       hud.toast('BRIBE PAID — $500');
     } else if (wanted.stars > 0) {
       hud.toast('NOT ENOUGH CASH');
@@ -227,13 +237,51 @@ function respawn() {
     v.health = 100;
     v.speed = 0;
   }
-  wanted.clear();
+  wanted.clear(true);
+  police.clearAll();
   const spawn = world.nearestRoad(0, 65);
   player.respawnAt(spawn.x, spawn.z, 0);
   save.x = spawn.x;
   save.z = spawn.z;
   snapCamera();
   hud.toast('WASTED — BACK ON THE STREET');
+}
+
+let busted = false;
+let bustTimer = 0;
+let bustRelease = null;
+
+function beginBusted() {
+  if (busted) return;
+  busted = true;
+  bustTimer = 3.6;
+  bustRelease = 'DOWNTOWN PRECINCT';
+  const stars = Math.max(1, wanted.stars);
+  const fine = Math.min(Math.max(0, save.money), 120 + stars * 260);
+  save.money = Math.max(0, save.money - fine);
+  const v = player.vehicle;
+  if (v) {
+    player.exitVehicle(world);
+    v.speed = 0;
+  }
+  wanted.clear(true);
+  police.clearAll();
+  hud.showBusted(`FINE $${fine}  ·  ${bustRelease}`);
+  audio.blip(196, 0.5, 'square', 0.14);
+  audio.blip(146, 0.55, 'sawtooth', 0.1);
+  saveGame(save, true);
+}
+
+function finishBusted() {
+  busted = false;
+  hud.hideBusted();
+  const spawn = world.nearestRoad(-130, 0);
+  player.respawnAt(spawn.x, spawn.z, 0);
+  save.x = spawn.x;
+  save.z = spawn.z;
+  snapCamera();
+  hud.toast('RELEASED — STAY CLEAN');
+  saveGame(save, true);
 }
 
 let last = performance.now();
@@ -243,6 +291,17 @@ function frame(now) {
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
+
+  if (busted) {
+    bustTimer -= dt;
+    look.setTime(currentHours());
+    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0 });
+    hud.tick(dt);
+    settings.update(dt, 1 / rawDt);
+    if (bustTimer <= 0) finishBusted();
+    look.render();
+    return;
+  }
 
   handleActions();
   look.setTime(currentHours());
@@ -259,7 +318,8 @@ function frame(now) {
   }
 
   traffic.update(dt, player, wanted.stars);
-  wanted.update(dt, player.pos, traffic.police, gameTime);
+  police.update(dt, player, wanted, gameTime);
+  wanted.update(dt, player, police, gameTime);
   missions.update(dt, player);
   world.update(player.pos);
   updateCamera(dt, world);
@@ -267,12 +327,16 @@ function frame(now) {
   settings.update(dt, 1 / rawDt);
 
   const driving = !!player.vehicle;
+  const siren = police.audioState(player.pos, cameraYaw);
   audio.update(dt, {
     speed: player.speed,
     throttle: driving ? input.drivingInput().throttle : 0,
     wanted: wanted.stars,
     driving,
     time: gameTime,
+    siren: siren.level,
+    sirenPan: siren.pan,
+    heli: siren.heli,
   });
 
   if (missions.active) {
@@ -287,8 +351,9 @@ function frame(now) {
     hp: player.hp,
     speed: player.speed,
     mode: player.mode,
+    heat: wanted.hudState(),
   });
-  if (++frameCount % 3 === 0) minimap.update(player, world, missions, traffic.police);
+  if (++frameCount % 3 === 0) minimap.update(player, world, missions, police, wanted);
 
   save.x = player.pos.x;
   save.z = player.pos.z;
@@ -306,4 +371,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug surface for testing in the browser console.
-window.__jha = { player, world, traffic, missions, wanted, look, save, settings, minimap };
+window.__jha = { player, world, traffic, police, missions, wanted, look, save, settings, minimap };
