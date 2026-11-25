@@ -15,7 +15,23 @@ import { damp, dist2 } from './util/math.js';
 
 const canvas = document.getElementById('game');
 const ui = document.getElementById('ui');
+const boot = document.getElementById('boot');
+const fatal = document.getElementById('fatal');
 const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || 'ontouchstart' in window;
+
+function showFatal(error) {
+  const detail = error?.stack || error?.message || String(error || 'Unknown error');
+  fatal.textContent = `JHA City hit a problem:\n${detail}`;
+  fatal.classList.add('show');
+}
+window.addEventListener('error', (e) => {
+  if (e.error || e.message) showFatal(e.error || e.message);
+});
+window.addEventListener('unhandledrejection', (e) => showFatal(e.reason));
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  showFatal('Graphics context was lost. Restart JHA City.');
+});
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 const scene = new THREE.Scene();
@@ -65,6 +81,7 @@ let camIndex = 0;
 const camDistances = [8.5, 11, 14];
 let lowFps = 0;
 let frameCount = 0;
+let booted = false;
 
 function unlockAudio() {
   audio.unlock();
@@ -229,6 +246,12 @@ function frame(now) {
   }
 
   look.render();
+
+  if (!booted) {
+    booted = true;
+    boot?.classList.add('done');
+    setTimeout(() => boot?.remove(), 500);
+  }
 }
 requestAnimationFrame(frame);
 

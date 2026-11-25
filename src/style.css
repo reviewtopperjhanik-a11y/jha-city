@@ -15,6 +15,53 @@ html, body {
 #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 #ui { position: fixed; inset: 0; pointer-events: none; }
 
+#boot {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  text-align: center;
+  background: radial-gradient(circle at 50% 42%, #241f3d 0%, #0c0d1b 58%, #070810 100%);
+  transition: opacity 0.45s ease;
+}
+#boot.done { opacity: 0; pointer-events: none; }
+.boot-brand {
+  font-size: clamp(30px, 7vmin, 54px);
+  font-weight: 900;
+  letter-spacing: 7px;
+  color: #ffd9a0;
+  text-shadow: 0 0 22px rgba(247, 102, 133, 0.75), 0 0 54px rgba(129, 61, 187, 0.55);
+}
+.boot-sub {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #8ff0e8;
+  opacity: 0.75;
+  animation: bootPulse 1.4s ease-in-out infinite;
+}
+@keyframes bootPulse { 50% { opacity: 0.32; } }
+#fatal {
+  display: none;
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 120;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #ff3355;
+  background: rgba(28, 8, 16, 0.94);
+  color: #ffd9a0;
+  font: 11px/1.5 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+#fatal.show { display: block; }
+
 .hud { position: absolute; inset: 0; }
 .hud-card {
   background: rgba(12, 13, 27, 0.62);
@@ -76,7 +123,7 @@ html, body {
 }
 .minimap-wrap {
   position: absolute;
-  top: calc(54px + env(safe-area-inset-top));
+  top: calc(42px + env(safe-area-inset-top));
   right: 12px;
   width: 132px;
   height: 132px;
@@ -84,6 +131,7 @@ html, body {
   overflow: hidden;
   pointer-events: auto;
   cursor: pointer;
+  touch-action: manipulation;
   border: 1px solid rgba(47, 182, 178, 0.7);
   box-shadow: 0 0 18px rgba(47, 182, 178, 0.24), inset 0 0 24px rgba(12, 13, 27, 0.5);
   background: rgba(12, 13, 27, 0.72);
@@ -114,7 +162,7 @@ html, body {
 }
 .map-overlay.open { display: grid; }
 .map-panel {
-  width: min(78vmin, 600px);
+  width: min(80vmin, 620px);
   padding: 9px;
   border-radius: 16px;
   background: linear-gradient(155deg, rgba(30, 27, 55, 0.98), rgba(12, 13, 27, 0.98));

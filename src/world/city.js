@@ -244,7 +244,11 @@ function makeTreeGeometry() {
   const parts = [];
   const add = (g, color) => {
     paintSolid(g, new THREE.Color(color), rng, 0.12);
-    parts.push(g);
+    // Icosahedrons are non-indexed while cylinders are indexed; normalise all
+    // parts before merging or mergeGeometries returns null.
+    const ng = g.index ? g.toNonIndexed() : g;
+    if (ng !== g) g.dispose();
+    parts.push(ng);
   };
   const pot = new THREE.CylinderGeometry(0.56, 0.66, 0.34, 8);
   pot.translate(0, 0.17, 0);
@@ -329,7 +333,9 @@ function makeBushGeometry() {
   const parts = [];
   const add = (g, color) => {
     paintSolid(g, new THREE.Color(color), rng, 0.14);
-    parts.push(g);
+    const ng = g.index ? g.toNonIndexed() : g;
+    if (ng !== g) g.dispose();
+    parts.push(ng);
   };
   const pot = new THREE.CylinderGeometry(0.34, 0.42, 0.3, 7);
   pot.translate(0, 0.15, 0);
