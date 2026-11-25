@@ -7,9 +7,11 @@ export class Hud {
         <div class="hud-card" id="hud-money">$0</div>
         <div class="hud-card" id="hud-stars">☆☆☆☆☆</div>
         <div class="hud-card" id="hud-clock">18:24</div>
+        <div class="hud-card hud-weather" id="hud-weather">☀ CLEAR</div>
         <button class="hud-card hud-gear" id="hud-settings" aria-label="Open settings">⚙</button>
       </div>
       <div class="hud-card hud-heat" id="hud-heat" hidden>SEARCHING</div>
+      <div class="hud-card hud-signal" id="hud-signal" hidden>GREEN</div>
       <div class="hud-card hud-fps" id="hud-fps">60 FPS</div>
       <div class="hud-card hud-mission" id="hud-mission">No active job</div>
       <div class="hud-bottom">
@@ -26,12 +28,14 @@ export class Hud {
           <div class="busted-sub" id="hud-busted-sub"></div>
         </div>
       </div>
-      <div class="hint">WASD / stick · GAS · BRAKE · DRIFT · BOOST · E ENTER/EXIT · J JOBS · G SHOP · N DAY/NIGHT · P BRIBE · TAP MAP · ⚙ QUALITY</div>
+      <div class="hint">WASD / stick · GAS · BRAKE · DRIFT · BOOST · E ENTER/EXIT · J JOBS · G SHOP · H HORN · V WEATHER · N DAY/NIGHT · P BRIBE · TAP MAP · ⚙ QUALITY</div>
     `;
     root.append(el);
     this.money = el.querySelector('#hud-money');
     this.stars = el.querySelector('#hud-stars');
     this.clock = el.querySelector('#hud-clock');
+    this.weather = el.querySelector('#hud-weather');
+    this.signal = el.querySelector('#hud-signal');
     this.mission = el.querySelector('#hud-mission');
     this.health = el.querySelector('#hud-health');
     this.armor = el.querySelector('#hud-armor');
@@ -75,6 +79,15 @@ export class Hud {
     const h = Math.floor(s.hours);
     const m = Math.floor((s.hours - h) * 60);
     this.clock.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    if (s.weather) this.weather.textContent = s.weather;
+    const signal = s.signal;
+    if (!signal) {
+      this.signal.hidden = true;
+    } else {
+      this.signal.hidden = false;
+      this.signal.textContent = signal.label;
+      this.signal.className = `hud-card hud-signal ${signal.tone}`;
+    }
     this.mission.textContent = s.mission;
     this.health.textContent = `HP ${Math.round(s.hp)}`;
     this.armor.textContent = `ARMOR ${Math.round(s.armor || 0)}`;

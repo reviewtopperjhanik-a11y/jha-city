@@ -10,6 +10,9 @@ export class GameAudio {
     this.sirenPan = null;
     this.rotor = null;
     this.rotorGain = null;
+    this.rain = null;
+    this.rainGain = null;
+    this.hornCooldown = 0;
     this.nextNote = 0;
     this.step = 0;
     this.enabled = true;
@@ -67,6 +70,47 @@ export class GameAudio {
     r.start();
     this.rotor = r;
     this.rotorGain = rg;
+
+    // Looping filtered noise for rain. Generated once, gain driven by weather.
+    const frames = Math.floor(this.ctx.sampleRate * 2);
+    const buffer = this.ctx.createBuffer(1, frames, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let brown = 0;
+    for (let i = 0; i < frames; i++) {
+      brown = (brown + (Math.random() * 2 - 1) * 0.14) * 0.96;
+      data[i] = brown;
+    }
+    const rain = this.ctx.createBufferSource();
+    rain.buffer = buffer;
+    rain.loop = true;
+    const rainFilter = this.ctx.createBiquadFilter();
+    rainFilter.type = 'lowpass';
+    rainFilter.frequency.value = 2400;
+    const rgain = this.ctx.createGain();
+    rgain.gain.value = 0;
+    rain.connect(rainFilter).connect(rgain).connect(this.master);
+    rain.start();
+    this.rain = rain;
+    this.rainGain = rgain;
+  }
+
+  horn() {
+    if (!this.ctx || !this.enabled || this.hornCooldown > 0) return;
+    this.hornCooldown = 0.6;
+    const now = this.ctx.currentTime;
+    for (const freq of [392, 494]) {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.055, now + 0.025);
+      gain.gain.setValueAtTime(0.055, now + 0.22);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
+      osc.connect(gain).connect(this.master);
+      osc.start(now);
+      osc.stop(now + 0.38);
+    }
   }
 
   blip(freq = 660, dur = 0.14, type = 'sine', vol = 0.12) {
@@ -82,9 +126,11 @@ export class GameAudio {
     o.stop(this.ctx.currentTime + dur + 0.02);
   }
 
-  update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0 }) {
+  update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0 }) {
     if (!this.ctx || !this.enabled) return;
     const now = this.ctx.currentTime;
+    this.hornCooldown = Math.max(0, this.hornCooldown - dt);
+    if (this.rainGain) this.rainGain.gain.setTargetAtTime(rain * 0.05, now, 0.4);
     const targetFreq = 45 + speed * 6.5 + throttle * 22;
     this.engine.frequency.setTargetAtTime(targetFreq, now, 0.08);
     this.engineFilter.frequency.setTargetAtTime(500 + speed * 45, now, 0.1);

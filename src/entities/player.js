@@ -211,13 +211,13 @@ export class Player {
     this.foot.visible = true;
   }
 
-  update(dt, input, world, cameraYaw) {
+  update(dt, input, world, cameraYaw, surfaceGrip = 1) {
     if (this.vehicle) {
       const v = this.vehicle;
       const drive = input.drivingInput();
       const px = v.pos.x;
       const pz = v.pos.z;
-      v.applyInput(dt, drive, world);
+      v.applyInput(dt, drive, world, surfaceGrip);
       const moved = Math.hypot(v.pos.x - px, v.pos.z - pz);
       const radius = v.type === 'bike' ? 0.75 : 1.15;
       const wedged = world.collide(v.pos.x, v.pos.z, radius).hit;

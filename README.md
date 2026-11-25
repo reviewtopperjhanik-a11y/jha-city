@@ -36,6 +36,8 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Sprint (on foot) | Shift | BOOST |
 | Camera | C | CAM |
 | Toggle day / night | N | D/N |
+| Horn | H | HORN |
+| Cycle weather | V | WX |
 | City map (zoom, pan, waypoint) | Tap minimap | Tap minimap |
 | Quality / FPS meter | ⚙ button | ⚙ button |
 | Bribe police ($500) | P | — |
@@ -78,11 +80,25 @@ Save slots are also available in the ⚙ panel. Loading a slot restores cash, st
 location, owned vehicles and graphics settings. Armor absorbs impact damage before health, and
 upgraded bodies take less collision damage.
 
+## City life
+
+Grid intersections have instanced three-lamp signals. Civilian drivers keep to their lane, queue
+at red lights and behind slower cars, and speed up when you honk. A hard collision leaves a
+wreck marker; nearby pedestrians gather around it and disperse after a while. Pedestrians also
+flee from wanted chases, scatter from horns and put up umbrellas in the rain.
+
+Four skyline landmarks — **Solar Spire**, **Port Crane**, **Sunset Wheel** and **Neon Arch** —
+occupy their own clear blocks and appear on the map. Weather cycles automatically between clear,
+drizzle and rain; `V` (or the WX button) switches between automatic, clear and rain. Rain thickens
+the fog, adds a synthesized rain bed, reduces grip and acceleration, and makes the minimap show
+the same city as usual.
+
 ## Goals
 
 - Bike, car and on-foot play from the first playable build
 - Procedural city with day/night, traffic, pedestrians and dynamic police pursuit
 - Story chain, seven job types, garage economy and three save slots
+- Traffic lights, lane-following traffic, accident crowds, landmarks and weather
 - 30 FPS target on mid-range phones (DPR cap, instancing, quality tiers)
 
 ## License

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { C, DISTRICTS, districtAt } from '../look/palette.js';
+import { isLandmarkBlock, addLandmarks } from './landmarks.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
 import { clamp, dist2, TAU } from '../util/math.js';
 
@@ -472,6 +473,8 @@ export function createCity(scene, look) {
       chunk.cx += cx;
       chunk.cz += cz;
       chunk.n++;
+      // Landmarks own their block: leave it clear for the skyline feature.
+      if (isLandmarkBlock(i, j)) continue;
       const districtKey = districtAt(cx, cz);
       const district = DISTRICTS[districtKey];
       const palette = BUILDING_PALETTES[districtKey] || [district.base];
@@ -577,6 +580,7 @@ export function createCity(scene, look) {
   }
 
   root.add(neonSign());
+  const landmarks = addLandmarks(root, look, bounds);
 
   function randomRoadPoint(r) {
     const idx = randInt(r, 0, GRID.N);
@@ -615,5 +619,5 @@ export function createCity(scene, look) {
     }
   }
 
-  return { root, bounds, chunks, update, collide, nearestRoad, randomRoadPoint, GRID, roadLine };
+  return { root, bounds, chunks, landmarks, update, collide, nearestRoad, randomRoadPoint, GRID, roadLine };
 }

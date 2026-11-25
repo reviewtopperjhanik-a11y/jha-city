@@ -220,12 +220,13 @@ export class Vehicle {
     if (flags.color != null) this.setColor(flags.color);
   }
 
-  applyInput(dt, input, world) {
+  applyInput(dt, input, world, surfaceGrip = 1) {
     this.blocked = false;
     const boosting = input.boost && this.boost > 1;
+    const traction = clamp(surfaceGrip, 0.55, 1);
     const max = this.maxSpeed * (boosting ? 1.35 : 1);
-    const accel = (boosting ? 30 : 17) * (this.upgrades.engine ? 1.18 : 1) * (input.throttle || 0);
-    const braking = (input.brake || 0) * 25;
+    const accel = (boosting ? 30 : 17) * (this.upgrades.engine ? 1.18 : 1) * (input.throttle || 0) * traction;
+    const braking = (input.brake || 0) * 25 * traction;
 
     this.speed += accel * dt;
     this.speed -= braking * dt;
@@ -235,7 +236,7 @@ export class Vehicle {
     this.speed = clamp(this.speed, -8, max);
 
     const grip = clamp(Math.abs(this.speed) / 9, 0.12, 1);
-    const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (input.handbrake ? 1.5 : 1);
+    const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (0.5 + 0.5 * traction) * (input.handbrake ? 1.5 : 1);
     // Screen-right is world -x for a chase camera behind the vehicle: invert steer.
     this.heading = wrapAngle(this.heading - (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1));
 

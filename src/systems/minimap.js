@@ -73,6 +73,8 @@ export class Minimap {
         <span><i class="dot cop"></i>POLICE</span>
         <span><i class="dot search"></i>SEARCH</span>
         <span><i class="dot biz"></i>GARAGE / SHOP / SAFEHOUSE</span>
+        <span><i class="dot landmark"></i>LANDMARK</span>
+        <span><i class="dot accident"></i>ACCIDENT</span>
         <button class="map-clear" hidden>CLR WP</button>
       </div>
       <div class="map-tip">TAP MAP TO SET WAYPOINT · DRAG TO PAN · PINCH OR +/− TO ZOOM</div>`;
@@ -429,7 +431,7 @@ export class Minimap {
     c.restore();
   }
 
-  _drawMarkers(c, S, view, player, missions, police, wanted, waypoint, economy) {
+  _drawMarkers(c, S, view, player, missions, police, wanted, waypoint, economy, extras) {
     const toX = (v) => this._toPx(v, view.cx, S, view);
     const toY = (v) => this._toPx(v, view.cz, S, view);
     const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.005);
@@ -559,6 +561,43 @@ export class Minimap {
       c.restore();
     }
 
+    for (const landmark of extras?.landmarks || []) {
+      const x = toX(landmark.x);
+      const y = toY(landmark.z);
+      if (x < 0 || x > S || y < 0 || y > S) continue;
+      const r = Math.max(6, S * 0.014);
+      c.save();
+      c.translate(x, y);
+      c.rotate(Math.PI / 4);
+      c.shadowColor = '#ffd9a0';
+      c.shadowBlur = 8;
+      c.fillStyle = '#ffd9a0';
+      c.strokeStyle = '#fff3e0';
+      c.lineWidth = 1;
+      c.fillRect(-r, -r, r * 2, r * 2);
+      c.strokeRect(-r, -r, r * 2, r * 2);
+      c.restore();
+    }
+
+    for (const incident of extras?.incidents || []) {
+      const x = toX(incident.x);
+      const y = toY(incident.z);
+      if (x < 0 || x > S || y < 0 || y > S) continue;
+      const r = Math.max(5, S * 0.012);
+      c.save();
+      c.strokeStyle = '#ff3355';
+      c.shadowColor = '#ff3355';
+      c.shadowBlur = 10;
+      c.lineWidth = Math.max(1.5, S * 0.003);
+      c.beginPath();
+      c.moveTo(x - r, y - r);
+      c.lineTo(x + r, y + r);
+      c.moveTo(x + r, y - r);
+      c.lineTo(x - r, y + r);
+      c.stroke();
+      c.restore();
+    }
+
     c.save();
     c.translate(px, py);
     c.rotate(Math.PI - player.heading);
@@ -618,18 +657,18 @@ export class Minimap {
     }
     c.clearRect(0, 0, S, S);
     c.drawImage(this.baseBig, 0, 0);
-    this._drawMarkers(c, S, view, this.last.player, this.last.missions, this.last.police, this.last.wanted, this.waypoint, this.last.economy);
+    this._drawMarkers(c, S, view, this.last.player, this.last.missions, this.last.police, this.last.wanted, this.waypoint, this.last.economy, this.last.extras);
   }
 
-  update(player, world, missions, police, wanted, economy) {
+  update(player, world, missions, police, wanted, economy, extras) {
     this.world = world;
     this.baseRange = world.GRID.HALF + world.GRID.ROAD;
-    this.last = { player, missions, police, wanted, economy };
+    this.last = { player, missions, police, wanted, economy, extras };
 
     const S = this.small.width;
     const view = { cx: player.pos.x, cz: player.pos.z, range: 165 };
     this._drawBase(this.ctxSmall, S, view, world, true);
-    this._drawMarkers(this.ctxSmall, S, view, player, missions, police, wanted, this.waypoint, economy);
+    this._drawMarkers(this.ctxSmall, S, view, player, missions, police, wanted, this.waypoint, economy, extras);
     if (this.isOpen) {
       this._drawLarge();
       this._updateWaypointUI();

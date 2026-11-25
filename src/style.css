@@ -113,6 +113,21 @@ html, body {
 .hud-heat.search { color: #ffa948; }
 .hud-heat.search::after { background: #ffa948; box-shadow: 0 0 8px #ffa948; }
 .hud-heat.hidden { color: #8ff0e8; }
+.hud-weather { color: #8ff0e8; font-size: 10px; font-weight: 800; letter-spacing: 1px; }
+.hud-signal {
+  position: absolute;
+  top: calc(74px + env(safe-area-inset-top));
+  right: 12px;
+  min-width: 64px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1.2px;
+}
+.hud-signal[hidden] { display: none; }
+.hud-signal.go { color: #5cffa8; border-color: rgba(92, 255, 168, 0.7); box-shadow: 0 0 12px rgba(92, 255, 168, 0.25); }
+.hud-signal.slow { color: #ffc247; border-color: rgba(255, 194, 71, 0.7); }
+.hud-signal.stop { color: #ff5c75; border-color: rgba(255, 51, 85, 0.7); }
 @keyframes heatPulse { 50% { box-shadow: 0 0 16px rgba(255, 51, 85, 0.35); } }
 .hud-fps {
   position: absolute;
@@ -476,6 +491,8 @@ html, body {
 .map-legend .dot.cop { background: linear-gradient(90deg, #ff3355 50%, #3a7bff 50%); box-shadow: 0 0 8px #ff3355; }
 .map-legend .dot.search { background: transparent; border: 1px solid #ff3355; box-shadow: 0 0 8px rgba(255, 51, 85, 0.7); }
 .map-legend .dot.biz { background: linear-gradient(135deg, #2fb6b2 33%, #ffa948 33% 66%, #813dbb 66%); box-shadow: 0 0 8px rgba(47, 182, 178, 0.6); }
+.map-legend .dot.landmark { background: #ffd9a0; border-radius: 1px; transform: rotate(45deg); box-shadow: 0 0 8px #ffd9a0; }
+.map-legend .dot.accident { background: transparent; border: 1px solid #ff3355; box-shadow: 0 0 8px rgba(255, 51, 85, 0.7); }
 .map-hint { opacity: 0.45; font-weight: 500; }
 
 .menu-overlay {
@@ -619,6 +636,8 @@ html, body {
   touch-action: none;
 }
 .tbtn.down { background: rgba(247, 102, 133, 0.75); color: #fff; }
+.tbtn.horn { border-color: #ffc247; color: #ffc247; }
+.tbtn.weather { border-color: #8ff0e8; color: #8ff0e8; }
 .tbtn.gas { border-color: #2fb6b2; color: #8ff0e8; }
 .tbtn.boost { border-color: #ff885f; color: #ffc2a0; }
 

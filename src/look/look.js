@@ -8,6 +8,7 @@ import { clamp, smooth, TAU } from '../util/math.js';
 
 const col = (hex) => new THREE.Color(hex);
 const mix = (a, b, t) => col(a).lerp(col(b), t);
+const rainTint = col(0x6a7490);
 
 export function makeGradientMap() {
   // Cool shadow -> warm lit. Bands, not pixels: no PS1 dither/jitter.
@@ -106,9 +107,23 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   composer.addPass(new OutputPass());
 
   const u = sky.material.uniforms;
-  const state = { hours: 18.4, day: 0.35, bloomEnabled, dpr: 0, shadows: true, shadowSize: 1024 };
+  const state = { hours: 18.4, day: 0.35, bloomEnabled, dpr: 0, shadows: true, shadowSize: 1024, weather: 0 };
+  const horizonNow = col(C.tangerine);
   let viewW = window.innerWidth;
   let viewH = window.innerHeight;
+
+  function applyAtmosphere() {
+    const w = state.weather;
+    scene.fog.color.copy(horizonNow).lerp(rainTint, w * 0.55);
+    scene.fog.density = (0.00085 + (1 - state.day) * 0.00025) * (1 + w * 1.5);
+    sun.intensity = (0.4 + state.day * 1.7) * (1 - w * 0.35);
+    hemi.intensity = (0.7 + state.day * 0.55) * (1 - w * 0.15);
+  }
+
+  function setWeather(level) {
+    state.weather = clamp(level || 0, 0, 1);
+    applyAtmosphere();
+  }
 
   function setTime(hours) {
     state.hours = ((hours % 24) + 24) % 24;
@@ -137,9 +152,8 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     hemi.groundColor.copy(ground);
     hemi.intensity = 0.7 + day * 0.55;
     sun.color.copy(elev > 0 ? mix(C.tangerine, 0xffeed6, day) : 0xa8bdff);
-    sun.intensity = 0.4 + day * 1.7;
-    scene.fog.color.copy(horizon);
-    scene.fog.density = 0.00085 + (1 - day) * 0.00025;
+    horizonNow.copy(horizon);
+    applyAtmosphere();
   }
 
   function resize(w, h) {
@@ -196,6 +210,7 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     hemi,
     state,
     setTime,
+    setWeather,
     resize,
     render,
     setBloom,

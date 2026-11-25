@@ -10,6 +10,7 @@ const DEFAULTS = {
   bikeUpgraded: false,
   carUpgraded: false,
   hours: 8.0,
+  weather: 'auto',
   quality: 'auto',
   autoTier: null,
   showFps: true,

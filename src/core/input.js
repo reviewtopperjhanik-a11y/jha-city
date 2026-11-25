@@ -11,6 +11,8 @@ const KEY_ACTIONS = {
   KeyG: 'shop',
   KeyP: 'bribe',
   KeyN: 'time',
+  KeyH: 'horn',
+  KeyV: 'weather',
 };
 
 export class Input {
@@ -43,6 +45,8 @@ export class Input {
       ['time', 'D/N', 'time'],
       ['jobs', 'JOBS', 'jobs'],
       ['shop', 'SHOP', 'shop'],
+      ['horn', 'HORN', 'horn'],
+      ['weather', 'WX', 'weather'],
     ];
     right.innerHTML = buttons
       .map(([action, label, cls]) => `<button class="tbtn ${cls}" data-action="${action}">${label}</button>`)

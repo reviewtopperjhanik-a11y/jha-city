@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Vehicle } from '../entities/vehicle.js';
 import { C } from '../look/palette.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
-import { clamp, dist2 } from '../util/math.js';
+import { clamp, damp, dist2 } from '../util/math.js';
 
 const carColors = [C.amber, C.teal, C.coral, C.tangerine, C.dusk, C.flamingo, 0xe8e8f0];
 
@@ -110,6 +110,11 @@ export class Traffic {
     this.world = world;
     this.rng = makeRng(7712);
     this.onCrime = callbacks.crime || (() => {});
+    this.onAccident = callbacks.accident || (() => {});
+    this.lights = callbacks.lights || null;
+    this.weather = callbacks.weather || null;
+    this.incidents = [];
+    this.hornTime = 0;
     this.vehicles = [];
     // Kept as an empty array for save/debug callers that expect the old shape;
     // pursuit vehicles now live in systems/police.js.
@@ -137,10 +142,23 @@ export class Traffic {
     const variants = [];
     for (let i = 0; i < 12; i++) variants.push(makePedGeometry(pedRng, i));
     const pedMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: look.gradientMap });
+    const umbrellaGeo = new THREE.ConeGeometry(0.82, 0.32, 8);
+    const stickGeo = new THREE.CylinderGeometry(0.025, 0.025, 1.5, 5);
+    const stickMat = new THREE.MeshBasicMaterial({ color: 0x2a3050 });
+    const umbrellaMats = [C.coral, C.teal, C.amber, C.flamingo, C.lane]
+      .map((color) => new THREE.MeshBasicMaterial({ color, toneMapped: false }));
     const addPed = (x, z) => {
       const mesh = new THREE.Mesh(variants[this.peds.length % variants.length], pedMat);
       mesh.castShadow = true;
       mesh.scale.setScalar(rand(this.rng, 0.92, 1.08));
+      const umbrella = new THREE.Group();
+      const canopy = new THREE.Mesh(umbrellaGeo, umbrellaMats[this.peds.length % umbrellaMats.length]);
+      canopy.position.y = 2.42;
+      const stick = new THREE.Mesh(stickGeo, stickMat);
+      stick.position.y = 1.95;
+      umbrella.add(canopy, stick);
+      umbrella.visible = false;
+      mesh.add(umbrella);
       scene.add(mesh);
       this.peds.push({
         x,
@@ -149,7 +167,9 @@ export class Traffic {
         speed: rand(this.rng, 1.2, 2.6),
         turn: rand(this.rng, 0, 4),
         fleeing: false,
+        gawk: null,
         phase: rand(this.rng, 0, Math.PI * 2),
+        umbrella,
         mesh,
       });
     };
@@ -185,37 +205,123 @@ export class Traffic {
     return best;
   }
 
-  _route(v, dt) {
+  _laneOffset(axis, dir) {
+    const lane = this.world.GRID.ROAD * 0.22;
+    if (axis === 'z') return dir > 0 ? -lane : lane;
+    return dir > 0 ? lane : -lane;
+  }
+
+  _vehicleAhead(v) {
     const r = v.route;
-    const step = v.speed * dt;
+    const coord = r.axis === 'z' ? v.pos.z : v.pos.x;
+    let best = null;
+    let bestGap = 11;
+    for (const other of this.vehicles) {
+      if (other === v) continue;
+      let axis = r.axis;
+      let dir = r.dir;
+      let line = r.line;
+      if (other.ai && other.route) {
+        if (other.route.axis !== r.axis || other.route.line !== r.line || other.route.dir !== r.dir) continue;
+      } else if (other.role === 'player') {
+        const h = other.heading;
+        axis = Math.abs(Math.sin(h)) > 0.5 ? 'x' : 'z';
+        dir = axis === 'z' ? (Math.cos(h) >= 0 ? 1 : -1) : (Math.sin(h) >= 0 ? 1 : -1);
+        line = this._nearestLine(axis === 'z' ? other.pos.x : other.pos.z);
+        if (axis !== r.axis || line !== r.line) continue;
+      } else continue;
+      const oc = axis === 'z' ? other.pos.z : other.pos.x;
+      const gap = (oc - coord) * dir;
+      if (gap > 0.5 && gap < bestGap) {
+        bestGap = gap;
+        best = other;
+      }
+    }
+    return best ? { vehicle: best, gap: bestGap } : null;
+  }
+
+  _route(v, dt, surfaceGrip = 1) {
+    const r = v.route;
+    v.heading = r.axis === 'z' ? (r.dir > 0 ? 0 : Math.PI) : (r.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+    let target = 9 + (v._baseSpeed ||= rand(this.rng, 0, 5));
+    if (v.yieldToPlayer) target = Math.min(target, 3);
+    if (v.honkBoost > 0) {
+      target += v.honkBoost;
+      v.honkBoost = Math.max(0, v.honkBoost - dt * 1.1);
+    }
+    if (this.lights) {
+      const stop = this.lights.nextStop(v.pos, r.axis, r.dir);
+      if (stop && stop.dist > 1.5 && stop.dist < 15 && !this.lights.canGo(r.axis)) target = 0;
+    }
+    for (const incident of this.incidents) {
+      const along = (r.axis === 'z' ? incident.z - v.pos.z : incident.x - v.pos.x) * r.dir;
+      const across = r.axis === 'z' ? Math.abs(incident.x - v.pos.x) : Math.abs(incident.z - v.pos.z);
+      if (along > 0 && along < 16 && across < 12) target = Math.min(target, 3);
+    }
+    const ahead = this._vehicleAhead(v);
+    if (ahead) target = Math.min(target, Math.max(0, ahead.vehicle.speed - 1 + (ahead.gap - 4) * 0.35));
+    v.targetSpeed = clamp(target, 0, 16);
+
+    v.applyInput(dt, { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false }, this.world, surfaceGrip);
+    v.speed += (v.targetSpeed - v.speed) * dt * 1.4;
+    const desired = this._laneOffset(r.axis, r.dir);
+    v.laneOffset = v.laneOffset == null ? desired : damp(v.laneOffset, desired, 2.6, dt);
+
     if (r.axis === 'z') {
-      v.pos.z += r.dir * step;
-      v.pos.x = this.world.roadLine(r.line);
-      v.heading = r.dir > 0 ? 0 : Math.PI;
+      v.pos.x = this.world.roadLine(r.line) + v.laneOffset;
       if (Math.abs(v.pos.z) > this.world.GRID.HALF - 22) {
         r.axis = 'x';
         r.line = this._nearestLine(v.pos.x);
-        r.dir = r.dir > 0 ? -1 : 1;
-        v.pos.z = this.world.roadLine(clamp(r.line, 0, this.world.GRID.N));
+        r.dir = -r.dir;
+        v.pos.z = this.world.roadLine(clamp(r.line, 0, this.world.GRID.N)) + this._laneOffset('x', r.dir);
       }
     } else {
-      v.pos.x += r.dir * step;
-      v.pos.z = this.world.roadLine(r.line);
-      v.heading = r.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      v.pos.z = this.world.roadLine(r.line) + v.laneOffset;
       if (Math.abs(v.pos.x) > this.world.GRID.HALF - 22) {
         r.axis = 'z';
         r.line = this._nearestLine(v.pos.z);
-        r.dir = r.dir > 0 ? -1 : 1;
-        v.pos.x = this.world.roadLine(clamp(r.line, 0, this.world.GRID.N));
+        r.dir = -r.dir;
+        v.pos.x = this.world.roadLine(clamp(r.line, 0, this.world.GRID.N)) + this._laneOffset('z', r.dir);
       }
     }
-    v.applyInput(dt, { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false }, this.world);
-    v.speed += (v.targetSpeed - v.speed) * dt * 1.4;
   }
 
   _nearestLine(v) {
     const i = Math.round((v + this.world.GRID.HALF) / this.world.GRID.BLOCK);
     return clamp(i, 0, this.world.GRID.N);
+  }
+
+  onHorn(pos) {
+    this.hornTime = 1.3;
+    let reacted = 0;
+    for (const p of this.peds) {
+      if (dist2(p.x, p.z, pos.x, pos.z) > 26) continue;
+      p.heading = Math.atan2(p.x - pos.x, p.z - pos.z);
+      p.turn = rand(this.rng, 0.3, 0.9);
+      reacted++;
+    }
+    for (const v of this.vehicles) {
+      if (!v.ai || v.role !== 'traffic') continue;
+      if (dist2(v.pos.x, v.pos.z, pos.x, pos.z) < 34) v.honkBoost = 2.4;
+    }
+    return reacted;
+  }
+
+  triggerAccident(x, z, severity = 12) {
+    const incident = { x, z, life: 28, total: 28, severity };
+    this.incidents.push(incident);
+    if (this.incidents.length > 6) this.incidents.shift();
+    let gathered = 0;
+    for (const p of this.peds) {
+      if (gathered >= 7 || dist2(p.x, p.z, x, z) > 48) continue;
+      const angle = rand(this.rng, 0, Math.PI * 2);
+      const radius = rand(this.rng, 3.5, 7);
+      p.gawk = { incident, x: x + Math.sin(angle) * radius, z: z + Math.cos(angle) * radius, life: rand(this.rng, 10, 18) };
+      p.fleeing = false;
+      gathered++;
+    }
+    this.onAccident(incident, gathered);
+    return incident;
   }
 
   _resolvePlayerCollision(v, player) {
@@ -271,6 +377,10 @@ export class Traffic {
       pv.health = Math.max(0, pv.health - impact * 0.09);
       v.health = Math.max(0, v.health - impact * 0.06);
     }
+    if (impact > 11 && (v.accidentCooldown || 0) <= 0) {
+      v.accidentCooldown = 7;
+      this.triggerAccident(v.pos.x, v.pos.z, impact);
+    }
     v._sync(0);
   }
 
@@ -278,14 +388,27 @@ export class Traffic {
     for (let i = 0; i < this.peds.length; i++) {
       const p = this.peds[i];
       const d = dist2(p.x, p.z, player.pos.x, player.pos.z);
-      p.fleeing = wanted > 0 && d < 26;
-      p.turn -= dt;
-      if (p.turn <= 0) {
-        p.turn = rand(this.rng, 2.6, 6.5);
-        p.heading += rand(this.rng, -1.1, 1.1);
+      p.umbrella.visible = !!this.weather?.isRaining();
+      if (p.gawk) {
+        p.gawk.life -= dt;
+        if (p.gawk.life <= 0) p.gawk = null;
+      }
+      p.fleeing = !p.gawk && wanted > 0 && d < 26;
+      if (!p.gawk) {
+        p.turn -= dt;
+        if (p.turn <= 0) {
+          p.turn = rand(this.rng, 2.6, 6.5);
+          p.heading += rand(this.rng, -1.1, 1.1);
+        }
       }
       if (p.fleeing) p.heading = Math.atan2(p.x - player.pos.x, p.z - player.pos.z);
-      const sp = p.fleeing ? p.speed * 3.4 : p.speed;
+      if (p.gawk) {
+        const gd = dist2(p.x, p.z, p.gawk.x, p.gawk.z);
+        const cx = gd > 0.9 ? p.gawk.x : p.gawk.incident.x;
+        const cz = gd > 0.9 ? p.gawk.z : p.gawk.incident.z;
+        p.heading = Math.atan2(cx - p.x, cz - p.z);
+      }
+      const sp = p.fleeing ? p.speed * 3.4 : p.gawk ? p.speed * 1.2 : p.speed * (this.weather?.isRaining() ? 1.15 : 1);
       const nx = p.x + Math.sin(p.heading) * sp * dt;
       const nz = p.z + Math.cos(p.heading) * sp * dt;
       const c = this.world.collide(nx, nz, 0.32);
@@ -324,17 +447,22 @@ export class Traffic {
     }
   }
 
-  update(dt, player, wanted) {
+  update(dt, player, wanted, surfaceGrip = 1) {
     this.crimeCooldown = Math.max(0, this.crimeCooldown - dt);
     this.crimeGrace = Math.max(0, this.crimeGrace - dt);
+    this.hornTime = Math.max(0, this.hornTime - dt);
+    for (let i = this.incidents.length - 1; i >= 0; i--) {
+      this.incidents[i].life -= dt;
+      if (this.incidents[i].life <= 0) this.incidents.splice(i, 1);
+    }
     for (const v of this.vehicles) {
+      v.accidentCooldown = Math.max(0, (v.accidentCooldown || 0) - dt);
       if (v === player.vehicle) continue;
       if (v.role === 'police' || v.role === 'suspect') continue;
       if (v.ai) {
         const d = dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z);
-        if (d < 10 && Math.abs(v.speed - player.speed) > 5) v.targetSpeed = 3;
-        else v.targetSpeed = 9 + (v._baseSpeed ||= rand(this.rng, 0, 5));
-        this._route(v, dt);
+        v.yieldToPlayer = d < 10 && Math.abs(v.speed - player.speed) > 5;
+        this._route(v, dt, surfaceGrip);
         if (d < 2.4 && player.speed > 8 && this.crimeCooldown <= 0 && this.crimeGrace <= 0) {
           this.onCrime('traffic');
           this.crimeCooldown = 2.5;

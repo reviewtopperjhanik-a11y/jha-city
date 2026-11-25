@@ -7,6 +7,8 @@ import { GameAudio } from './core/audio.js';
 import { loadSave, saveGame, saveSlot, loadSlot, listSlots, currentSlot } from './core/save.js';
 import { Player } from './entities/player.js';
 import { Traffic } from './systems/traffic.js';
+import { TrafficLights } from './systems/trafficlights.js';
+import { Weather } from './systems/weather.js';
 import { Menu } from './systems/menu.js';
 import { Economy, PRICES, PAINT_COLORS } from './systems/economy.js';
 import { Police } from './systems/police.js';
@@ -83,11 +85,22 @@ const police = new Police(scene, look, world, {
   onBusted: () => beginBusted(),
   toast: (msg) => hud.toast(msg),
 });
+const lights = new TrafficLights(scene, look, world);
+const weather = new Weather(scene, look, world, {
+  change: (label) => hud.toast(`WEATHER: ${label}`),
+});
+weather.setMode(save.weather || 'auto');
 const traffic = new Traffic(scene, look, world, {
   crime: (kind) => {
     wanted.crime(1, gameTime, player.pos.x, player.pos.z);
     hud.toast(kind === 'ped' ? 'WITNESS CALLED THE COPS!' : 'RECKLESS DRIVING!');
   },
+  accident: () => {
+    audio.blip(92, 0.32, 'sawtooth', 0.11);
+    hud.toast('ACCIDENT — CROWD GATHERING');
+  },
+  lights,
+  weather,
 });
 const missions = new Missions(scene, world, {
   reward: (amount) => {
@@ -207,6 +220,15 @@ function handleActions() {
     if (loc) openBusinessMenu(loc);
     else hud.toast('NO BUSINESS NEARBY — SEE THE MAP');
     return;
+  }
+  if (input.consume('horn')) {
+    audio.horn();
+    traffic.onHorn(player.pos);
+  }
+  if (input.consume('weather')) {
+    save.weather = weather.cycle();
+    hud.toast(`WEATHER: ${weather.labelForTarget(weather.target)}`);
+    saveGame(save, true);
   }
   if (input.consume('bribe')) {
     if (wanted.stars > 0 && save.money >= 500) {
@@ -363,6 +385,7 @@ function applySlotState(slot, state) {
   settings.mode = ['auto', 'high', 'medium', 'low'].includes(save.quality) ? save.quality : 'auto';
   settings.autoTier = Number.isFinite(save.autoTier) ? Math.max(0, Math.min(2, Math.round(save.autoTier))) : 1;
   settings.showFps = save.showFps !== false;
+  weather.setMode(save.weather || 'auto');
   settings._apply();
   settings._renderSlots?.();
   snapCamera();
@@ -474,11 +497,13 @@ function frame(now) {
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
+  lights.update(dt);
+  weather.update(dt, player);
+  look.setTime(currentHours());
 
   if (busted) {
     bustTimer -= dt;
-    look.setTime(currentHours());
-    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0 });
+    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0, rain: weather.level });
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
     if (bustTimer <= 0) finishBusted();
@@ -487,8 +512,7 @@ function frame(now) {
   }
 
   if (menu.isOpen) {
-    look.setTime(currentHours());
-    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0 });
+    audio.update(dt, { speed: 0, throttle: 0, wanted: 0, driving: false, time: -1, siren: 0, sirenPan: 0, heli: 0, rain: weather.level });
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
     look.render();
@@ -496,9 +520,8 @@ function frame(now) {
   }
 
   handleActions();
-  look.setTime(currentHours());
   const healthBefore = player.vehicle ? player.vehicle.health : 0;
-  player.update(dt, input, world, cameraYaw);
+  player.update(dt, input, world, cameraYaw, weather.grip);
 
   if (player.vehicle && player.vehicle.health < healthBefore - 0.4) {
     const impact = (healthBefore - player.vehicle.health) * 0.3;
@@ -515,7 +538,7 @@ function frame(now) {
     hud.toast('VEHICLE WRECKED');
   }
 
-  traffic.update(dt, player, wanted.stars);
+  traffic.update(dt, player, wanted.stars, weather.grip);
   police.update(dt, player, wanted, gameTime);
   wanted.update(dt, player, police, gameTime);
   economy.update(dt, player);
@@ -536,6 +559,7 @@ function frame(now) {
     siren: siren.level,
     sirenPan: siren.pan,
     heli: siren.heli,
+    rain: weather.level,
   });
 
   const target = missions.currentPoint();
@@ -550,8 +574,15 @@ function frame(now) {
     speed: player.speed,
     mode: player.mode,
     heat: wanted.hudState(),
+    weather: weather.label(),
+    signal: lights.status(player),
   });
-  if (++frameCount % 3 === 0) minimap.update(player, world, missions, police, wanted, economy);
+  if (++frameCount % 3 === 0) {
+    minimap.update(player, world, missions, police, wanted, economy, {
+      landmarks: world.landmarks,
+      incidents: traffic.incidents,
+    });
+  }
 
   save.x = player.pos.x;
   save.z = player.pos.z;
@@ -570,4 +601,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug surface for testing in the browser console.
-window.__jha = { player, world, traffic, police, missions, wanted, economy, menu, look, save, settings, minimap };
+window.__jha = { player, world, traffic, police, missions, wanted, economy, menu, look, save, settings, minimap, lights, weather };
