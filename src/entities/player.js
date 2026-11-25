@@ -201,9 +201,13 @@ export class Player {
       const radius = v.type === 'bike' ? 0.75 : 1.15;
       const wedged = world.collide(v.pos.x, v.pos.z, radius).hit;
       const flipped = Math.abs(v.mesh.rotation.x) > 1.15 || Math.abs(v.mesh.rotation.z) > 1.15;
+      const expected = Math.abs(v.speed) * dt;
       v.recoverCooldown = Math.max(0, v.recoverCooldown - dt);
-      if (Math.abs(drive.throttle) > 0.45 && moved < 0.2 && Math.abs(v.speed) < 1.2) v.stuckTime += dt;
-      else v.stuckTime = Math.max(0, v.stuckTime - dt * 2);
+      if (Math.abs(drive.throttle) > 0.45 && v.blocked && Math.abs(v.speed) < 2.5 && moved < Math.max(0.004, expected * 0.35)) {
+        v.stuckTime += dt;
+      } else {
+        v.stuckTime = Math.max(0, v.stuckTime - dt * 2);
+      }
       if ((v.stuckTime > 2.2 || wedged || flipped) && v.recoverCooldown <= 0) {
         v.recover(world, v.heading);
         v.recoverCooldown = 2;

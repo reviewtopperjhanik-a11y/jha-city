@@ -29,6 +29,7 @@ export class Vehicle {
     this.role = 'parked';
     this.stuckTime = 0;
     this.recoverCooldown = 0;
+    this.blocked = false;
     this.aiInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.mesh = this._build();
     this.scene.add(this.mesh);
@@ -166,6 +167,7 @@ export class Vehicle {
   }
 
   applyInput(dt, input, world) {
+    this.blocked = false;
     const boosting = input.boost && this.boost > 1;
     const max = this.maxSpeed * (boosting ? 1.35 : 1);
     const accel = (boosting ? 30 : 17) * (input.throttle || 0);
@@ -187,6 +189,7 @@ export class Vehicle {
     const nz = this.pos.z + Math.cos(this.heading) * this.speed * dt;
     const c = world.collide(nx, nz, this.type === 'bike' ? 0.75 : 1.15);
     if (c.hit) {
+      this.blocked = true;
       // Slide along a wall instead of stopping dead against it.
       const slideX = world.collide(nx, this.pos.z, this.type === 'bike' ? 0.75 : 1.15);
       const slideZ = world.collide(this.pos.x, nz, this.type === 'bike' ? 0.75 : 1.15);
