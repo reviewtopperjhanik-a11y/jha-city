@@ -106,7 +106,9 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   composer.addPass(new OutputPass());
 
   const u = sky.material.uniforms;
-  const state = { hours: 18.4, day: 0.35, bloomEnabled };
+  const state = { hours: 18.4, day: 0.35, bloomEnabled, dpr: 0, shadows: true, shadowSize: 1024 };
+  let viewW = window.innerWidth;
+  let viewH = window.innerHeight;
 
   function setTime(hours) {
     state.hours = ((hours % 24) + 24) % 24;
@@ -141,6 +143,8 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   }
 
   function resize(w, h) {
+    viewW = w;
+    viewH = h;
     composer.setSize(w, h);
     bloom.setSize(Math.max(2, Math.floor(w * 0.6)), Math.max(2, Math.floor(h * 0.6)));
   }
@@ -155,10 +159,48 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   }
 
   function setDpr(v) {
-    renderer.setPixelRatio(v);
-    composer.setPixelRatio(v);
+    const ratio = Math.min(window.devicePixelRatio || 1, v);
+    state.dpr = ratio;
+    renderer.setPixelRatio(ratio);
+    composer.setPixelRatio(ratio);
+    composer.setSize(viewW, viewH);
+    bloom.setSize(Math.max(2, Math.floor(viewW * 0.6)), Math.max(2, Math.floor(viewH * 0.6)));
+  }
+
+  function setShadows(enabled, size) {
+    state.shadows = !!enabled;
+    renderer.shadowMap.enabled = state.shadows;
+    sun.castShadow = state.shadows;
+    if (size && size !== state.shadowSize) {
+      state.shadowSize = size;
+      if (sun.shadow.map) {
+        sun.shadow.map.dispose();
+        sun.shadow.map = null;
+      }
+      sun.shadow.mapSize.set(size, size);
+    }
+    if (state.shadows) renderer.shadowMap.needsUpdate = true;
+  }
+
+  function applyQuality({ dpr = 1.5, bloom: bloomOn = true, shadows = true, shadowSize = 1024 } = {}) {
+    setDpr(dpr);
+    setBloom(bloomOn);
+    setShadows(shadows, shadowSize);
   }
 
   setTime(state.hours);
-  return { gradientMap, sky, sun, hemi, state, setTime, resize, render, setBloom, setDpr };
+  return {
+    gradientMap,
+    sky,
+    sun,
+    hemi,
+    state,
+    setTime,
+    resize,
+    render,
+    setBloom,
+    setDpr,
+    setShadows,
+    applyQuality,
+  };
 }

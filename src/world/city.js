@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { C, DISTRICTS, districtAt } from '../look/palette.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
-import { dist2, TAU } from '../util/math.js';
+import { clamp, dist2, TAU } from '../util/math.js';
 
 export const GRID = { N: 7, BLOCK: 130, ROAD: 18, HALF: 455 };
 export const roadLine = (i) => -GRID.HALF + i * GRID.BLOCK;
@@ -600,11 +600,20 @@ export function createCity(scene, look) {
     return { x, z, hit: false };
   }
 
+  // Snap a stuck car or an unsafe exit point back to the nearest road centre.
+  function nearestRoad(x, z) {
+    const vi = clamp(Math.round((x + GRID.HALF) / GRID.BLOCK), 0, GRID.N);
+    const hi = clamp(Math.round((z + GRID.HALF) / GRID.BLOCK), 0, GRID.N);
+    const vx = roadLine(vi);
+    const hz = roadLine(hi);
+    return Math.abs(x - vx) <= Math.abs(z - hz) ? { x: vx, z } : { x, z: hz };
+  }
+
   function update(playerPos) {
     for (const chunk of chunks.values()) {
       chunk.group.visible = dist2(chunk.cx, chunk.cz, playerPos.x, playerPos.z) < 1050;
     }
   }
 
-  return { root, bounds, chunks, update, collide, randomRoadPoint, GRID, roadLine };
+  return { root, bounds, chunks, update, collide, nearestRoad, randomRoadPoint, GRID, roadLine };
 }

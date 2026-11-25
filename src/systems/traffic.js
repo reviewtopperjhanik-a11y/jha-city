@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Vehicle } from '../entities/vehicle.js';
 import { C } from '../look/palette.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
-import { clamp, dist2, angleLerp } from '../util/math.js';
+import { clamp, dist2, angleLerp, wrapAngle } from '../util/math.js';
 
 const carColors = [C.amber, C.teal, C.coral, C.tangerine, C.dusk, C.flamingo, 0xe8e8f0];
 
@@ -170,12 +170,12 @@ export class Traffic {
   }
 
   get enterables() {
-    return this.vehicles.filter((v) => v.role !== 'police');
+    return this.vehicles.filter((v) => v.role !== 'police' && v.role !== 'wrecked');
   }
 
   nearestVehicle(pos) {
     let best = null;
-    let bd = 4.2;
+    let bd = 5.0;
     for (const v of this.enterables) {
       const d = dist2(pos.x, pos.z, v.pos.x, v.pos.z);
       if (d < bd) {
@@ -224,8 +224,85 @@ export class Traffic {
     const dz = player.pos.z - v.pos.z;
     const d = Math.hypot(dx, dz) || 1;
     const target = Math.atan2(dx, dz);
-    v.heading = angleLerp(v.heading, target, 1 - Math.exp(-3.2 * dt));
+
+    // Look ahead and steer around buildings or other police cars instead of
+    // grinding against the same wall forever.
+    const look = Math.max(5, Math.abs(v.speed) * 0.35);
+    let steerTo = target;
+    for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6]) {
+      const h = target + off;
+      const px = v.pos.x + Math.sin(h) * look;
+      const pz = v.pos.z + Math.cos(h) * look;
+      if (this.world.collide(px, pz, 1.15).hit) continue;
+      if (this.police.some((o) => o !== v && dist2(px, pz, o.pos.x, o.pos.z) < 4.2)) continue;
+      steerTo = h;
+      break;
+    }
+    v.heading = wrapAngle(angleLerp(v.heading, steerTo, 1 - Math.exp(-3.6 * dt)));
+
+    const blocked = Math.abs(v.speed) < 1.5 && d > 8;
+    v.stuckTime = blocked ? (v.stuckTime || 0) + dt : Math.max(0, (v.stuckTime || 0) - dt * 2);
+    if (v.stuckTime > 2.2) {
+      v.recover(this.world, Math.atan2(dx, dz));
+    }
+
     v.applyInput(dt, { throttle: d > 9 ? 1 : 0.25, brake: d < 7 ? 0.4 : 0, steer: 0, handbrake: false, boost: d > 40 }, this.world);
+  }
+
+  _resolvePlayerCollision(v, player) {
+    const pv = player.vehicle;
+    if (!pv) {
+      // On foot: a vehicle nudges the player aside instead of passing through.
+      const min = (v.type === 'bike' ? 0.75 : 1.35) + 0.5;
+      let dx = player.pos.x - v.pos.x;
+      let dz = player.pos.z - v.pos.z;
+      let d = Math.hypot(dx, dz);
+      if (d >= min) return;
+      if (d < 0.001) {
+        dx = Math.sin(v.heading + Math.PI / 2);
+        dz = Math.cos(v.heading + Math.PI / 2);
+        d = 1;
+      }
+      player.pos.x = v.pos.x + (dx / d) * min;
+      player.pos.z = v.pos.z + (dz / d) * min;
+      const c = this.world.collide(player.pos.x, player.pos.z, 0.5);
+      if (c.hit) {
+        player.pos.x = c.x;
+        player.pos.z = c.z;
+      }
+      return;
+    }
+    if (v === pv) return;
+    const r1 = pv.type === 'bike' ? 0.85 : 1.45;
+    const r2 = v.type === 'bike' ? 0.85 : 1.45;
+    const min = r1 + r2;
+    let dx = v.pos.x - pv.pos.x;
+    let dz = v.pos.z - pv.pos.z;
+    let d = Math.hypot(dx, dz);
+    if (d >= min) return;
+    if (d < 0.001) {
+      dx = 1;
+      dz = 0;
+      d = 1;
+    }
+    const nx = dx / d;
+    const nz = dz / d;
+    const overlap = min - d;
+    v.pos.x += nx * overlap * 0.9;
+    v.pos.z += nz * overlap * 0.9;
+    const c = this.world.collide(v.pos.x, v.pos.z, r2);
+    if (c.hit) {
+      v.pos.x = c.x;
+      v.pos.z = c.z;
+    }
+    const impact = Math.abs(pv.speed - v.speed);
+    pv.speed *= 0.72;
+    v.speed *= 0.55;
+    if (impact > 6) {
+      pv.health = Math.max(0, pv.health - impact * 0.09);
+      v.health = Math.max(0, v.health - impact * 0.06);
+    }
+    v._sync(0);
   }
 
   _updatePolice(dt, player, wanted) {
@@ -234,6 +311,7 @@ export class Traffic {
       if (this.policeActive) {
         for (const v of this.police) {
           v.setVisible(false);
+          this.scene.remove(v.mesh);
           const i = this.vehicles.indexOf(v);
           if (i >= 0) this.vehicles.splice(i, 1);
         }
@@ -270,6 +348,7 @@ export class Traffic {
     while (this.police.length > need) {
       const v = this.police.pop();
       v.setVisible(false);
+      this.scene.remove(v.mesh);
       const i = this.vehicles.indexOf(v);
       if (i >= 0) this.vehicles.splice(i, 1);
     }
@@ -306,6 +385,21 @@ export class Traffic {
         p.x = clamp(nx, -440, 440);
         p.z = clamp(nz, -440, 440);
       }
+      // Pedestrians step aside instead of clipping through the player.
+      const rr = player.vehicle ? 2.4 : 1.05;
+      const near = dist2(p.x, p.z, player.pos.x, player.pos.z);
+      if (near < rr) {
+        let px = p.x - player.pos.x;
+        let pz = p.z - player.pos.z;
+        if (Math.abs(px) < 0.001 && Math.abs(pz) < 0.001) {
+          px = Math.sin(player.heading + Math.PI);
+          pz = Math.cos(player.heading + Math.PI);
+        }
+        const pd = Math.hypot(px, pz) || 1;
+        const safe = this.world.collide(player.pos.x + (px / pd) * rr, player.pos.z + (pz / pd) * rr, 0.32);
+        p.x = safe.x;
+        p.z = safe.z;
+      }
       // Walk bob and hip sway; pedestrians turn to face the way they walk.
       p.phase += dt * (p.fleeing ? 13 : 7.5);
       const bob = Math.abs(Math.sin(p.phase)) * (p.fleeing ? 0.09 : 0.05);
@@ -338,5 +432,10 @@ export class Traffic {
     }
     this._updatePolice(dt, player, wanted);
     this._updatePeds(dt, player, wanted);
+    // Resolve car-to-car contact after everyone has moved, so a parked car is
+    // also shoved and its mesh follows the new position.
+    for (const v of this.vehicles) {
+      if (v !== player.vehicle) this._resolvePlayerCollision(v, player);
+    }
   }
 }

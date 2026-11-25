@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { C } from '../look/palette.js';
-import { clamp, damp, TAU } from '../util/math.js';
+import { clamp, damp, TAU, wrapAngle } from '../util/math.js';
 
 const geo = {};
 const mats = new Map();
@@ -27,6 +27,8 @@ export class Vehicle {
     this.boost = 100;
     this.ai = false;
     this.role = 'parked';
+    this.stuckTime = 0;
+    this.recoverCooldown = 0;
     this.aiInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.mesh = this._build();
     this.scene.add(this.mesh);
@@ -179,23 +181,36 @@ export class Vehicle {
     const grip = clamp(Math.abs(this.speed) / 9, 0.12, 1);
     const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (input.handbrake ? 1.5 : 1);
     // Screen-right is world -x for a chase camera behind the vehicle: invert steer.
-    this.heading -= (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1);
+    this.heading = wrapAngle(this.heading - (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1));
 
     const nx = this.pos.x + Math.sin(this.heading) * this.speed * dt;
     const nz = this.pos.z + Math.cos(this.heading) * this.speed * dt;
     const c = world.collide(nx, nz, this.type === 'bike' ? 0.75 : 1.15);
     if (c.hit) {
-      this.speed *= 0.28;
-      this.pos.x = c.x;
-      this.pos.z = c.z;
-      this.health = Math.max(0, this.health - Math.abs(this.speed) * 0.08);
+      // Slide along a wall instead of stopping dead against it.
+      const slideX = world.collide(nx, this.pos.z, this.type === 'bike' ? 0.75 : 1.15);
+      const slideZ = world.collide(this.pos.x, nz, this.type === 'bike' ? 0.75 : 1.15);
+      if (!slideX.hit) this.pos.x = nx;
+      else if (!slideZ.hit) this.pos.z = nz;
+      else {
+        this.pos.x = c.x;
+        this.pos.z = c.z;
+      }
+      const impact = Math.abs(this.speed);
+      this.speed *= 0.55;
+      if (impact > 5) this.health = Math.max(0, this.health - impact * 0.055);
     } else {
       this.pos.x = nx;
       this.pos.z = nz;
     }
-    const lim = world.GRID.HALF + 30;
-    this.pos.x = clamp(this.pos.x, -lim, lim);
-    this.pos.z = clamp(this.pos.z, -lim, lim);
+    const lim = world.GRID.HALF;
+    const cx = clamp(this.pos.x, -lim, lim);
+    const cz = clamp(this.pos.z, -lim, lim);
+    if (cx !== this.pos.x || cz !== this.pos.z) {
+      this.pos.x = cx;
+      this.pos.z = cz;
+      this.speed *= 0.4;
+    }
 
     this._sync(dt, input.steer || 0, boosting, input.handbrake, input.brake || 0, input.throttle || 0);
   }
@@ -214,8 +229,41 @@ export class Vehicle {
 
   teleport(x, z, heading = this.heading) {
     this.pos.set(x, 0, z);
-    this.heading = heading;
+    this.heading = wrapAngle(heading);
     this.speed = 0;
+    this.stuckTime = 0;
+    this.mesh.rotation.x = 0;
+    this.mesh.rotation.z = 0;
+    this._sync(0);
+  }
+
+  recover(world, heading = this.heading) {
+    const r = this.type === 'bike' ? 0.75 : 1.15;
+    const h = wrapAngle(heading);
+    const base = world?.nearestRoad ? world.nearestRoad(this.pos.x, this.pos.z) : { x: this.pos.x, z: this.pos.z };
+    // nearestRoad can land inside a wall after odd collisions, so test a few
+    // points around it and pick the first clear one.
+    const spots = [
+      base,
+      { x: base.x + Math.sin(h) * 9, z: base.z + Math.cos(h) * 9 },
+      { x: base.x - Math.sin(h) * 9, z: base.z - Math.cos(h) * 9 },
+      { x: base.x + Math.cos(h) * 9, z: base.z - Math.sin(h) * 9 },
+      { x: base.x - Math.cos(h) * 9, z: base.z + Math.sin(h) * 9 },
+    ];
+    let spot = base;
+    for (const s of spots) {
+      const inCity = world?.GRID ? Math.abs(s.x) < world.GRID.HALF - 4 && Math.abs(s.z) < world.GRID.HALF - 4 : true;
+      if (inCity && (!world?.collide || !world.collide(s.x, s.z, r).hit)) {
+        spot = s;
+        break;
+      }
+    }
+    this.pos.set(spot.x, 0, spot.z);
+    this.heading = h;
+    this.speed = 0;
+    this.stuckTime = 0;
+    this.mesh.rotation.x = 0;
+    this.mesh.rotation.z = 0;
     this._sync(0);
   }
 

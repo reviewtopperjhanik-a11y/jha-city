@@ -9,6 +9,10 @@ export function angleLerp(a, b, t) {
   return a + d * t;
 }
 
+export function wrapAngle(a) {
+  return ((a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+}
+
 export function dist2(ax, az, bx, bz) {
   const dx = ax - bx;
   const dz = az - bz;

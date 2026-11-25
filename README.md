@@ -34,7 +34,13 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Sprint (on foot) | Shift | BOOST |
 | Camera | C | CAM |
 | Toggle day / night | N | D/N |
+| City map (zoom, pan, waypoint) | Tap minimap | Tap minimap |
+| Quality / FPS meter | ⚙ button | ⚙ button |
 | Bribe police ($500) | P | — |
+
+Quality starts on **AUTO**; it drops pixel density, bloom and shadows when the frame rate
+sags, and slowly raises them again when there is headroom. Pick HIGH / MEDIUM / LOW in the
+⚙ panel to lock a level. Settings are saved automatically.
 
 ## Goals
 

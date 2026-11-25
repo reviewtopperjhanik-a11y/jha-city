@@ -11,7 +11,8 @@ import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
 import { Hud } from './systems/hud.js';
 import { Minimap } from './systems/minimap.js';
-import { damp, dist2 } from './util/math.js';
+import { Settings } from './systems/settings.js';
+import { angleLerp, dist2, wrapAngle } from './util/math.js';
 
 const canvas = document.getElementById('game');
 const ui = document.getElementById('ui');
@@ -49,8 +50,10 @@ const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
 const input = new Input(ui);
 const audio = new GameAudio();
 const hud = new Hud(ui);
-const minimap = new Minimap(ui);
+const settings = new Settings(ui, look, save, { isMobile, toast: (msg) => hud.toast(msg) });
+const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
 const player = new Player(scene, look, save.x, save.z);
+player.onNotice = (msg) => hud.toast(msg);
 
 const wanted = new Wanted();
 const traffic = new Traffic(scene, look, world, {
@@ -79,9 +82,26 @@ let gameTime = 0;
 let cameraYaw = player.heading;
 let camIndex = 0;
 const camDistances = [8.5, 11, 14];
-let lowFps = 0;
 let frameCount = 0;
 let booted = false;
+let lookHold = 0;
+
+const camDesired = new THREE.Vector3();
+const camLook = new THREE.Vector3();
+const lookNow = new THREE.Vector3();
+
+function snapCamera() {
+  cameraYaw = player.heading;
+  const dist = camDistances[camIndex];
+  camera.position.set(
+    player.pos.x - Math.sin(cameraYaw) * dist,
+    player.pos.y + (player.mode === 'car' ? 4.8 : player.mode === 'bike' ? 3.6 : 3.1),
+    player.pos.z - Math.cos(cameraYaw) * dist,
+  );
+  camLook.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  camera.lookAt(camLook);
+}
+snapCamera();
 
 function unlockAudio() {
   audio.unlock();
@@ -100,6 +120,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (!dragging) return;
   cameraYaw += (e.clientX - lastX) * 0.006;
   lastX = e.clientX;
+  lookHold = 1.5;
 });
 canvas.addEventListener('pointerup', () => { dragging = false; });
 canvas.addEventListener('pointercancel', () => { dragging = false; });
@@ -117,8 +138,12 @@ window.addEventListener('resize', resize);
 function handleActions() {
   if (input.consume('e')) {
     if (player.vehicle) {
-      player.exitVehicle();
-      hud.toast('ON FOOT');
+      if (Math.abs(player.vehicle.speed) > 8) {
+        hud.toast('SLOW DOWN TO GET OUT');
+      } else {
+        player.exitVehicle(world);
+        hud.toast('ON FOOT');
+      }
     } else {
       const v = traffic.nearestVehicle(player.pos);
       if (v) {
@@ -154,32 +179,68 @@ function handleActions() {
   }
 }
 
-function updateCamera(dt) {
-  cameraYaw = damp(cameraYaw, player.heading, 1.6, dt);
-  const dist = camDistances[camIndex];
+function updateCamera(dt, world) {
+  lookHold = Math.max(0, lookHold - dt);
+  if (lookHold <= 0) {
+    const follow = player.vehicle ? 2.8 : 5.2;
+    cameraYaw = wrapAngle(angleLerp(cameraYaw, player.heading, 1 - Math.exp(-follow * dt)));
+  }
+  const baseDist = camDistances[camIndex];
+  const dist = baseDist + (player.vehicle ? Math.min(2.4, player.speed * 0.06) : 0);
   const height = player.mode === 'car' ? 4.8 : player.mode === 'bike' ? 3.6 : 3.1;
-  const desired = new THREE.Vector3(
-    player.pos.x - Math.sin(cameraYaw) * dist,
-    player.pos.y + height,
-    player.pos.z - Math.cos(cameraYaw) * dist,
+  const dx = -Math.sin(cameraYaw);
+  const dz = -Math.cos(cameraYaw);
+
+  // Pull the camera in when a building is between it and the player.
+  let safe = dist;
+  for (let t = 1.5; t <= dist; t += 1.2) {
+    if (world.collide(player.pos.x + dx * t, player.pos.z + dz * t, 0.4).hit) {
+      safe = Math.max(2, t - 1.1);
+      break;
+    }
+  }
+  const pull = safe / dist;
+  camDesired.set(
+    player.pos.x + dx * safe,
+    player.pos.y + height * (0.55 + 0.45 * pull),
+    player.pos.z + dz * safe,
   );
-  camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
-  camera.lookAt(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  camera.position.lerp(camDesired, 1 - Math.exp(-(player.vehicle ? 7 : 9) * dt));
+  // Never let the smooth follow trail inside a wall the collision probe found.
+  const offX = camera.position.x - player.pos.x;
+  const offZ = camera.position.z - player.pos.z;
+  const offLen = Math.hypot(offX, offZ);
+  if (offLen > safe && offLen > 0.001) {
+    const k = safe / offLen;
+    camera.position.x = player.pos.x + offX * k;
+    camera.position.z = player.pos.z + offZ * k;
+  }
+  lookNow.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  camLook.lerp(lookNow, 1 - Math.exp(-12 * dt));
+  camera.lookAt(camLook);
 }
 
 function respawn() {
-  player.hp = 100;
+  const v = player.vehicle;
+  if (v) {
+    player.exitVehicle(world);
+    v.health = 100;
+    v.speed = 0;
+  }
   wanted.clear();
-  player.exitVehicle();
-  player.pos.set(0, 0, 40);
-  player.heading = 0;
+  const spawn = world.nearestRoad(0, 65);
+  player.respawnAt(spawn.x, spawn.z, 0);
+  save.x = spawn.x;
+  save.z = spawn.z;
+  snapCamera();
   hud.toast('WASTED — BACK ON THE STREET');
 }
 
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  const rawDt = Math.max(0.0001, (now - last) / 1000);
+  const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
 
@@ -189,18 +250,21 @@ function frame(now) {
 
   if (player.hp <= 0) respawn();
   if (player.vehicle && player.vehicle.health <= 0) {
+    const wreck = player.vehicle;
+    player.exitVehicle(world);
+    wreck.role = 'wrecked';
+    wreck.health = 0;
+    wreck.speed = 0;
     hud.toast('VEHICLE WRECKED');
-    player.exitVehicle();
-    player.vehicle.teleport(save.x, save.z + 20);
-    player.vehicle.health = 100;
   }
 
   traffic.update(dt, player, wanted.stars);
   wanted.update(dt, player.pos, traffic.police, gameTime);
   missions.update(dt, player);
   world.update(player.pos);
-  updateCamera(dt);
+  updateCamera(dt, world);
   hud.tick(dt);
+  settings.update(dt, 1 / rawDt);
 
   const driving = !!player.vehicle;
   audio.update(dt, {
@@ -231,20 +295,6 @@ function frame(now) {
   save.hours = currentHours();
   saveGame(save);
 
-  // Auto quality drop on weak GPUs: first bloom, then pixel ratio.
-  const fps = 1 / dt;
-  if (fps < 24) lowFps += dt;
-  else lowFps = Math.max(0, lowFps - dt * 0.5);
-  if (lowFps > 3) {
-    lowFps = 0;
-    if (look.state.bloomEnabled) {
-      look.setBloom(false);
-      hud.toast('QUALITY: PERFORMANCE');
-    } else {
-      look.setDpr(1);
-    }
-  }
-
   look.render();
 
   if (!booted) {
@@ -256,4 +306,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug surface for testing in the browser console.
-window.__jha = { player, world, traffic, missions, wanted, look, save };
+window.__jha = { player, world, traffic, missions, wanted, look, save, settings, minimap };

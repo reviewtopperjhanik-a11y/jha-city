@@ -7,7 +7,9 @@ export class Hud {
         <div class="hud-card" id="hud-money">$0</div>
         <div class="hud-card" id="hud-stars">☆☆☆☆☆</div>
         <div class="hud-card" id="hud-clock">18:24</div>
+        <button class="hud-card hud-gear" id="hud-settings" aria-label="Open settings">⚙</button>
       </div>
+      <div class="hud-card hud-fps" id="hud-fps">60 FPS</div>
       <div class="hud-card hud-mission" id="hud-mission">No active job</div>
       <div class="hud-bottom">
         <div class="hud-card" id="hud-health">HP 100</div>
@@ -15,7 +17,7 @@ export class Hud {
         <div class="hud-card" id="hud-mode">ON FOOT</div>
       </div>
       <div class="toast" id="hud-toast"></div>
-      <div class="hint">WASD / stick · W GAS · S BRAKE · SPACE DRIFT/JUMP · SHIFT BOOST · E ENTER/EXIT · M DELIVERY · R RACE · T TAXI · N DAY/NIGHT · P BRIBE · TAP MAP</div>
+      <div class="hint">WASD / stick · W GAS · S BRAKE · SPACE DRIFT/JUMP · SHIFT BOOST · E ENTER/EXIT · M DELIVERY · R RACE · T TAXI · N DAY/NIGHT · P BRIBE · TAP MAP · ⚙ QUALITY</div>
     `;
     root.append(el);
     this.money = el.querySelector('#hud-money');
