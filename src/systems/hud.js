@@ -281,8 +281,10 @@ export class Hud {
       row.hidden = rowIds.length === 0 || !rowIds.some((id) => visible[id]);
       row.querySelectorAll('.slot').forEach((slot, slotIndex) => {
         const id = rowIds[slotIndex];
+        const show = !!(id && visible[id]);
         slot.replaceChildren();
-        if (id && visible[id]) slot.append(this.buttons.get(id));
+        slot.hidden = !show;
+        if (show) slot.append(this.buttons.get(id));
       });
     });
 
