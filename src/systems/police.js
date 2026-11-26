@@ -6,6 +6,10 @@ import { clamp, angleLerp, wrapAngle, dist2 } from '../util/math.js';
 import { makeRng, rand } from '../util/rng.js';
 
 const UNIT_COUNT = [0, 1, 2, 4, 5, 5];
+// Hoisted so steering and aiming never allocate an array literal per frame.
+const UNIT_STEER = [0, 0.42, -0.42, 0.86, -0.86, 1.3, -1.3, 1.8, -1.8];
+const OFFICER_STEER = [0, 0.55, -0.55, 1.05, -1.05, 1.6, -1.6];
+const PURSUIT_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
 const NAVY = 0x1b2542;
 const VEST = 0xffa948;
 const SKIN = 0xd9a06b;
@@ -150,6 +154,35 @@ export class Police {
     this.barrierGlowMat = new THREE.MeshBasicMaterial({ color: 0xff3355, toneMapped: false });
     this.heliUp = new THREE.Vector3(0, 1, 0);
     this._tmpV = new THREE.Vector3();
+
+    // Phase 3: quality toggles are flag-only. A small fixed tracer pool is
+    // created once here and recycled for every officer shot.
+    this.lowQuality = false;
+    this.activeUnits = 0;
+    this.activeOfficers = 0;
+    const tracerGeo = new THREE.BoxGeometry(0.06, 0.06, 1);
+    const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.9, toneMapped: false });
+    this.tracers = [];
+    for (let i = 0; i < 8; i++) {
+      const tracer = new THREE.Mesh(tracerGeo, tracerMat);
+      tracer.visible = false;
+      tracer.frustumCulled = false;
+      scene.add(tracer);
+      this.tracers.push(tracer);
+    }
+    this.tracerNext = 0;
+    this.muzzleFlash = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 6, 4),
+      new THREE.MeshBasicMaterial({ color: 0xffe6b0, transparent: true, opacity: 0.9, toneMapped: false }),
+    );
+    this.muzzleFlash.visible = false;
+    scene.add(this.muzzleFlash);
+    this.flashLife = 0;
+  }
+
+  // Preserve every unit; LOW simply updates and draws fewer of them.
+  setLowQuality(isLow) {
+    this.lowQuality = !!isLow;
   }
 
   update(dt, player, wanted, time) {
@@ -171,20 +204,107 @@ export class Police {
     this.sirenTime += dt;
     this.spawnDelay -= dt;
     const need = UNIT_COUNT[stars] || 1;
+    const want = this.lowQuality ? Math.min(need, 2) : need;
 
     if (this.spawnDelay <= 0) {
-      if (this.units.length < need) this._spawnUnit(player);
-      this.spawnDelay = stars >= 4 ? 0.9 : 1.35;
+      if (this.units.length < want) this._spawnUnit(player);
+      this.spawnDelay = this.lowQuality ? 2.1 : (stars >= 4 ? 0.9 : 1.35);
     }
-    while (this.units.length > need) this._removeUnit(this.units.pop());
+    // LOW keeps surplus units in the pool for when quality rises again.
+    if (!this.lowQuality) while (this.units.length > need) this._removeUnit(this.units.pop());
 
+    this._decayTracers(dt);
+    this._markUnits(player);
     this._updateUnits(dt, player, wanted, stars, time);
     this._updateRoadblocks(dt, player, wanted, stars);
+    this._markOfficers(player);
     this._updateOfficers(dt, player, wanted);
     this._updateHeli(dt, player, wanted, stars);
     this._resolveContacts(player);
     this._separateUnits();
     this._flashLights();
+  }
+
+  _decayTracers(dt) {
+    for (let i = 0; i < this.officers.length; i++) {
+      const o = this.officers[i];
+      if (o.tracerLife <= 0) continue;
+      o.tracerLife -= dt;
+      if (o.tracerLife <= 0) {
+        if (o.tracer) o.tracer.visible = false;
+        o.tracer = null;
+      }
+    }
+    if (this.flashLife > 0) {
+      this.flashLife -= dt;
+      if (this.flashLife <= 0) this.muzzleFlash.visible = false;
+    }
+  }
+
+  // HIGH: every pooled unit runs. LOW: two passes prefer the closest units,
+  // with a fallback pass so a pursuit never freezes when nobody is nearby.
+  _markUnits(player) {
+    this.activeUnits = 0;
+    if (!this.lowQuality) {
+      for (let i = 0; i < this.units.length; i++) {
+        this.units[i]._phase3Active = true;
+        this.units[i].mesh.visible = true;
+        this.activeUnits++;
+      }
+      return;
+    }
+    const px = player.pos.x;
+    const pz = player.pos.z;
+    const cap = Math.min(2, this.units.length);
+    for (let i = 0; i < this.units.length; i++) {
+      const v = this.units[i];
+      v._phase3Active = false;
+      v._phase3Marked = false;
+      v.mesh.visible = false;
+    }
+    for (let pass = 0; pass < 2 && this.activeUnits < cap; pass++) {
+      for (let i = 0; i < this.units.length && this.activeUnits < cap; i++) {
+        const v = this.units[i];
+        if (v._phase3Marked) continue;
+        if (pass === 0 && dist2(v.pos.x, v.pos.z, px, pz) > 140 * 140) continue;
+        v._phase3Marked = true;
+        v._phase3Active = true;
+        v.mesh.visible = true;
+        this.activeUnits++;
+      }
+    }
+  }
+
+  _markOfficers(player) {
+    this.activeOfficers = 0;
+    if (!this.lowQuality) {
+      for (let i = 0; i < this.officers.length; i++) {
+        this.officers[i]._phase3Active = true;
+        this.officers[i].group.visible = true;
+        this.activeOfficers++;
+      }
+      return;
+    }
+    const px = player.pos.x;
+    const pz = player.pos.z;
+    const cap = Math.min(3, this.officers.length);
+    for (let i = 0; i < this.officers.length; i++) {
+      const o = this.officers[i];
+      o._phase3Active = false;
+      o._phase3Marked = false;
+      o.group.visible = false;
+    }
+    for (let pass = 0; pass < 2 && this.activeOfficers < cap; pass++) {
+      for (let i = 0; i < this.officers.length && this.activeOfficers < cap; i++) {
+        const o = this.officers[i];
+        if (o._phase3Marked) continue;
+        if (pass === 0 && dist2(o.x, o.z, px, pz) > 60 * 60) continue;
+        o._phase3Marked = true;
+        o._phase3Active = true;
+        o.group.visible = true;
+        this.activeOfficers++;
+      }
+    }
   }
 
   _spawnPoint(player) {
@@ -243,6 +363,7 @@ export class Police {
     const playerSpeed = Math.abs(pv?.speed || player.speed || 0);
 
     for (const v of this.units) {
+      if (v._phase3Active === false) continue;
       const dx = player.pos.x - v.pos.x;
       const dz = player.pos.z - v.pos.z;
       const d = Math.hypot(dx, dz) || 1;
@@ -272,7 +393,8 @@ export class Police {
       const targetHeading = Math.atan2(tdx, tdz);
       const look = Math.max(5, Math.abs(v.speed) * 0.3);
       let steerTo = targetHeading;
-      for (const off of [0, 0.42, -0.42, 0.86, -0.86, 1.3, -1.3, 1.8, -1.8]) {
+      for (let k = 0; k < UNIT_STEER.length; k++) {
+        const off = UNIT_STEER[k];
         const h = targetHeading + off;
         const px = v.pos.x + Math.sin(h) * look;
         const pz = v.pos.z + Math.cos(h) * look;
@@ -294,7 +416,9 @@ export class Police {
 
       const throttle = deployNow || (close && playerSlow) ? (d > 8 ? 0.22 : 0) : d > 45 ? 1 : 0.72;
       const brake = (close && playerSlow && v.speed > 4) || (d < 7 && v.speed > 16) ? 1 : 0;
-      v.applyInput(dt, { throttle, brake, steer: 0, handbrake: false, boost: false }, this.world);
+      PURSUIT_INPUT.throttle = throttle;
+      PURSUIT_INPUT.brake = brake;
+      v.applyInput(dt, PURSUIT_INPUT, this.world);
       v.deployCooldown = Math.max(0, v.deployCooldown - dt);
       if (v.officers >= 2 && d > 34) v.officers = 0;
 
@@ -357,22 +481,61 @@ export class Police {
       group,
       legL,
       legR,
+      // Combat hook state; every shot reuses the shared tracer pool below.
+      hp: 100,
+      fireCooldown: 0.5 + this.rng() * 0.5,
+      tracer: null,
+      tracerLife: 0,
     };
     this.officers.push(officer);
     return officer;
   }
 
   _removeOfficer(o) {
+    if (o.tracer) {
+      o.tracer.visible = false;
+      o.tracer = null;
+    }
     this.scene.remove(o.group);
     const i = this.officers.indexOf(o);
     if (i >= 0) this.officers.splice(i, 1);
+  }
+
+  // Combat hook: returns true only on the hit that takes the officer down.
+  damageOfficer(officer, amount = 0) {
+    if (!officer || officer.hp <= 0) return false;
+    officer.hp -= Math.max(0, amount || 0);
+    if (officer.hp > 0) return false;
+    officer.hp = 0;
+    this._removeOfficer(officer);
+    return true;
+  }
+
+  // One of eight preallocated line meshes; no THREE object is created on fire.
+  _tracer(o, player) {
+    const m = this.tracers[this.tracerNext];
+    this.tracerNext = (this.tracerNext + 1) % this.tracers.length;
+    const dx = player.pos.x - o.x;
+    const dz = player.pos.z - o.z;
+    const d = Math.hypot(dx, dz) || 1;
+    m.position.set(o.x + dx * 0.5, 1.35, o.z + dz * 0.5);
+    m.rotation.set(0, Math.atan2(dx, dz), 0);
+    m.scale.set(1, 1, Math.max(0.5, d - 1.6));
+    m.visible = true;
+    o.tracer = m;
+    o.tracerLife = 0.09;
+    this.muzzleFlash.position.set(o.x + Math.sin(o.heading) * 0.65, 1.45, o.z + Math.cos(o.heading) * 0.65);
+    this.muzzleFlash.visible = true;
+    this.flashLife = 0.07;
   }
 
   _updateOfficers(dt, player, wanted) {
     if (wanted.stars <= 0 || this.arrestLock > 0) return;
     for (let i = this.officers.length - 1; i >= 0; i--) {
       const o = this.officers[i];
+      if (o._phase3Active === false) continue;
       o.life += dt;
+      o.fireCooldown = Math.max(0, (o.fireCooldown || 0) - dt);
       const dx = player.pos.x - o.x;
       const dz = player.pos.z - o.z;
       const d = Math.hypot(dx, dz) || 1;
@@ -382,6 +545,15 @@ export class Police {
       if (clear && ((!pv && d < 2.05) || (pv && Math.abs(pv.speed) < 1.4 && d < 3.3))) {
         this._arrest();
         return;
+      }
+
+      // Gunfire is a separate threat from the close-range arrest above: at two
+      // stars an officer with a clear shot applies modest, cooldown-limited damage.
+      if (wanted.stars >= 2 && d < 42 && clear && o.fireCooldown <= 0 && typeof player.damage === 'function') {
+        const dmg = 7 + Math.min(6, (wanted.stars - 2) * 3);
+        player.damage(dmg);
+        this._tracer(o, player);
+        o.fireCooldown = Math.max(0.65, 1.6 - (wanted.stars - 2) * 0.25) + this.rng() * 0.16;
       }
 
       if (d > 78) o.farTime += dt;
@@ -410,8 +582,8 @@ export class Police {
       const targetHeading = Math.atan2(tx - o.x, tz - o.z);
       o.heading = wrapAngle(angleLerp(o.heading, targetHeading, 1 - Math.exp(-9 * dt)));
       let steer = o.heading;
-      for (const off of [0, 0.55, -0.55, 1.05, -1.05, 1.6, -1.6]) {
-        const h = targetHeading + off;
+      for (let k = 0; k < OFFICER_STEER.length; k++) {
+        const h = targetHeading + OFFICER_STEER[k];
         if (!this.world.collide(o.x + Math.sin(h) * 3.2, o.z + Math.cos(h) * 3.2, 0.4).hit) {
           steer = h;
           break;
@@ -661,7 +833,7 @@ export class Police {
     );
     spot.rotation.x = -Math.PI / 2;
     this.scene.add(group, cone, spot);
-    this.heli = { group, rotor, tailRotor, cone, spot, angle: 0 };
+    this.heli = { group, rotor, tailRotor, cone, spot, lights: [lightR, lightB], angle: 0 };
   }
 
   _removeHeli() {
@@ -673,17 +845,16 @@ export class Police {
 
   _flashLights() {
     for (const v of this.cars) {
-      if (!v.policeLights) continue;
+      if (!v.policeLights || v._phase3Active === false) continue;
       const phase = v.sirenPhase || 0;
       const on = Math.floor((this.sirenTime + phase) * 6) % 2 === 0;
       v.policeLights[0].visible = on;
       v.policeLights[1].visible = !on;
     }
-    if (this.heli) {
+    if (this.heli && this.heli.lights) {
       const on = Math.floor(this.sirenTime * 5) % 2 === 0;
-      const lights = this.heli.group.children.slice(-2);
-      lights[0].visible = on;
-      lights[1].visible = !on;
+      this.heli.lights[0].visible = on;
+      this.heli.lights[1].visible = !on;
     }
   }
 
@@ -691,7 +862,7 @@ export class Police {
     const pv = player.vehicle;
     if (pv) {
       for (const v of this.cars) {
-        if (v === pv) continue;
+        if (v === pv || v._phase3Active === false) continue;
         const r1 = pv.type === 'bike' ? 0.85 : 1.45;
         const r2 = v.type === 'bike' ? 0.85 : 1.45;
         const min = r1 + r2;
@@ -725,6 +896,7 @@ export class Police {
       }
     } else {
       for (const v of this.cars) {
+        if (v._phase3Active === false) continue;
         const min = 1.35 + 0.5;
         let dx = player.pos.x - v.pos.x;
         let dz = player.pos.z - v.pos.z;
@@ -767,9 +939,12 @@ export class Police {
 
   _separateUnits() {
     for (let i = 0; i < this.units.length; i++) {
+      const first = this.units[i];
+      if (first._phase3Active === false) continue;
       for (let j = i + 1; j < this.units.length; j++) {
-        const a = this.units[i];
+        const a = first;
         const b = this.units[j];
+        if (b._phase3Active === false) continue;
         let dx = b.pos.x - a.pos.x;
         let dz = b.pos.z - a.pos.z;
         let d = Math.hypot(dx, dz);
@@ -799,11 +974,13 @@ export class Police {
     if (!pv && speed < 0.5) radius -= 5;
 
     for (const v of this.cars) {
+      if (v._phase3Active === false) continue;
       const d = Math.hypot(v.pos.x - player.pos.x, v.pos.z - player.pos.z);
       if (d > radius) continue;
       if (lineClear(this.world, v.pos.x, v.pos.z, player.pos.x, player.pos.z)) return true;
     }
     for (const o of this.officers) {
+      if (o._phase3Active === false) continue;
       const d = Math.hypot(o.x - player.pos.x, o.z - player.pos.z);
       if (d <= 34 && lineClear(this.world, o.x, o.z, player.pos.x, player.pos.z)) return true;
     }
@@ -818,10 +995,12 @@ export class Police {
   audioState(playerPos, cameraYaw = 0) {
     let best = Infinity;
     for (const v of this.cars) {
+      if (v._phase3Active === false) continue;
       const d = Math.hypot(v.pos.x - playerPos.x, v.pos.z - playerPos.z);
       if (d < best) best = d;
     }
     for (const o of this.officers) {
+      if (o._phase3Active === false) continue;
       const d = Math.hypot(o.x - playerPos.x, o.z - playerPos.z);
       if (d < best) best = d;
     }
@@ -833,6 +1012,7 @@ export class Police {
       let dz = 0;
       let nearest = null;
       for (const v of this.cars) {
+        if (v._phase3Active === false) continue;
         if (!nearest || dist2(v.pos.x, v.pos.z, playerPos.x, playerPos.z) < dist2(nearest.pos.x, nearest.pos.z, playerPos.x, playerPos.z)) nearest = v;
       }
       if (nearest) {
@@ -856,6 +1036,9 @@ export class Police {
   }
 
   clearAll() {
+    for (let i = 0; i < this.tracers.length; i++) this.tracers[i].visible = false;
+    this.muzzleFlash.visible = false;
+    this.flashLife = 0;
     for (const v of this.cars) {
       v.setVisible(false);
       this.scene.remove(v.mesh);

@@ -97,12 +97,14 @@ export class Hud {
       <div class="ui-zone" id="zone-tl" data-zone="TL · MAP + VITALS"><div class="vitals" id="hud-vitals">
         <div class="hud-card" id="hud-health"><span id="hud-health-text">HP 100</span><span class="meter"><i id="hud-health-fill"></i></span></div>
         <div class="hud-card" id="hud-armor"><span id="hud-armor-text">ARMOR 0</span><span class="meter"><i id="hud-armor-fill"></i></span></div>
+        <div class="hud-card hud-ammo" id="hud-ammo" hidden><span id="hud-weapon-text">PISTOL</span><span id="hud-ammo-text">12 / 60</span><span class="meter"><i id="hud-reload-fill"></i></span></div>
       </div><div class="hud-card hud-heat" id="hud-heat" hidden>SEARCHING</div><div class="hud-card hud-fps" id="hud-fps">60 FPS</div></div>
       <div class="ui-zone" id="zone-tc" data-zone="TC · CLOCK">
         <div class="hud-card" id="hud-clock">08:00</div>
         <div class="hud-card" id="hud-mission" hidden>No active job</div>
       </div>
       <div class="ui-zone" id="zone-tr" data-zone="TR · CASH + MENU">
+        <button class="hud-card hud-gun" id="hud-gun" data-action="armed" aria-label="Toggle weapon mode">GUN</button>
         <button class="hud-card" id="hud-settings" data-action="menu" aria-label="Open city menu">≡</button>
         <button class="hud-card" id="hud-exit-photo" data-action="photoExit" aria-label="Exit photo mode" hidden>✕</button>
         <div class="hud-card" id="hud-money">$0</div>
@@ -120,11 +122,12 @@ export class Hud {
       <div class="ui-zone" id="zone-bc" data-zone="BC · EMPTY"></div>
       <div class="ui-zone" id="zone-br" data-zone="BR · ACTIONS"><div class="touch-right" id="touch-right"></div></div>
       <div class="hud-arrow" id="hud-arrow" hidden><div class="hud-arrow-tip" id="hud-arrow-tip"></div><div class="hud-arrow-label" id="hud-arrow-label">OBJECTIVE</div></div>
+      <div class="hud-reticle" id="hud-reticle" hidden><i></i><i></i><i></i><i></i><b></b></div>
       <div class="hud-damage" id="hud-damage" hidden></div>
       <div class="hud-photo-flash" id="hud-flash"></div>
       <div class="hud-toast" id="hud-toast"></div>
       <div class="hud-warning" id="hud-warning" hidden>HUD OVERLAP</div>
-      <div class="hint keyboard">WASD · J JOBS · G GARAGE · E ENTER · L LOOK · N DAY/NIGHT</div>
+      <div class="hint keyboard">WASD · F FIRE · Q AIM · Z RELOAD · X WEAPON · J JOBS · G GARAGE · E ENTER · N DAY/NIGHT</div>
       <div class="hint touch">SWIPE RIGHT HALF TO LOOK · TAP ≡ FOR JOBS, SHOP, RADIO &amp; MORE</div>
       <div class="busted" id="hud-busted" role="alert" aria-hidden="true">
         <div class="busted-inner"><div class="busted-kicker">JHA CITY POLICE</div>
@@ -160,6 +163,7 @@ export class Hud {
     this.lookZone = q('#look-surface');
     this.vitals = q('#hud-vitals');
     this.money = q('#hud-money');
+    this.gun = q('#hud-gun');
     this.stars = q('#hud-stars');
     this.clock = q('#hud-clock');
     this.weather = q('#hud-weather');
@@ -171,6 +175,11 @@ export class Hud {
     this.armorText = q('#hud-armor-text');
     this.healthFill = q('#hud-health-fill');
     this.armorFill = q('#hud-armor-fill');
+    this.ammo = q('#hud-ammo');
+    this.weaponText = q('#hud-weapon-text');
+    this.ammoText = q('#hud-ammo-text');
+    this.reloadFill = q('#hud-reload-fill');
+    this.reticle = q('#hud-reticle');
     this.speedo = q('#hud-speedo');
     this.speed = q('#hud-speed');
     this.speedRing = q('#hud-speed-ring');
@@ -288,6 +297,7 @@ export class Hud {
       });
     });
 
+    if (this.gun) this.gun.textContent = mode === 'armed' ? 'HOLSTER' : 'GUN';
     this.el.classList.toggle('photo', mode === 'photo');
     this.el.classList.toggle('photo-mode', mode === 'photo');
     const exit = this.el.querySelector('#hud-exit-photo');
@@ -324,6 +334,20 @@ export class Hud {
     this.armorText.textContent = `ARMOR ${Math.round(s.armor || 0)}`;
     this.healthFill.style.setProperty('--fill', `${clamp100(s.hp ?? 100)}%`);
     this.armorFill.style.setProperty('--fill', `${clamp100(s.armor || 0)}%`);
+
+    const weapon = this.mode === 'armed' ? s.weapon : null;
+    this.ammo.hidden = !weapon;
+    this.reticle.hidden = !weapon;
+    if (weapon) {
+      const label = String(weapon.label || weapon.id || 'PISTOL').toUpperCase();
+      this.weaponText.textContent = label.length > 10 ? label.slice(0, 10) : label;
+      this.ammoText.textContent = weapon.reloading
+        ? 'RELOADING'
+        : `${Math.round(weapon.mag || 0)} / ${Math.round(weapon.reserve || 0)}`;
+      this.reloadFill.style.setProperty('--fill', weapon.reloading
+        ? `${clamp100(100 - (weapon.reloadLeft || 0) * 65)}%`
+        : '100%');
+    }
 
     const driving = s.mode === 'car' || s.mode === 'bike';
     this.speedo.hidden = !driving;

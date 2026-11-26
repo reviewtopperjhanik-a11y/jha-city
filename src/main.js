@@ -20,6 +20,8 @@ import { Minimap } from './systems/minimap.js';
 import { Settings } from './systems/settings.js';
 import { Achievements } from './systems/achievements.js';
 import { PhotoMode } from './systems/photo.js';
+import { Combat } from './systems/combat.js';
+import { Gangs } from './systems/gangs.js';
 import { cycleStyle, randomStyle } from './look/wardrobe.js';
 import { screenMarker } from './util/screen.js';
 import { angleLerp, dist2, wrapAngle } from './util/math.js';
@@ -55,9 +57,10 @@ look.resize(window.innerWidth, window.innerHeight);
 const world = createCity(scene, look);
 const save = loadSave();
 save.activeSlot = currentSlot();
-let sessionStartHours = save.hours;
-// ~6 min of day followed by ~5 min of night, then repeat.
-const currentHours = () => (sessionStartHours + gameTime * 0.0367) % 24;
+// One full day takes `dayLength` minutes (5/10/20/40 in Settings). The clock
+// advances incrementally so changing the length never makes time jump.
+let clockHours = save.hours;
+const currentHours = () => clockHours;
 const hud = new Hud(ui);
 const input = new Input(ui);
 const audio = new GameAudio();
@@ -74,6 +77,7 @@ const weather = new Weather(scene, look, world, {
   change: (label) => hud.toast(`WEATHER: ${label}`),
 });
 weather.setMode(save.weather || 'auto');
+const qualityListeners = [];
 const settings = new Settings(ui, look, save, {
   isMobile,
   toast: (msg) => hud.toast(msg),
@@ -81,7 +85,11 @@ const settings = new Settings(ui, look, save, {
   onLoadSlot: (slot, state) => applySlotState(slot, state),
   onLook: () => openWardrobe(),
   onEditHud: () => hud.openEdit(),
-  onQuality: (preset) => weather.setLowQuality(preset.key === 'low'),
+  onQuality: (preset) => {
+    const low = preset.key === 'low';
+    weather.setLowQuality(low);
+    for (const listener of qualityListeners) listener(low);
+  },
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
 hud.attachMinimap(minimap.wrap);
@@ -121,6 +129,23 @@ const traffic = new Traffic(scene, look, world, {
   lights,
   weather,
 });
+// Phase 4: armed mode, weapons and enemies. The combat system owns its own
+// pooled effects; all gameplay systems stay decoupled through this one bridge.
+const gangs = new Gangs(scene, look, world, { toast: (msg) => hud.toast(msg) });
+const combat = new Combat({
+  scene, look, world, player, police, traffic, wanted, audio, gangs,
+  toast: (msg) => hud.toast(msg),
+});
+combat.setAutoAim(save.autoAim !== false);
+combat.setArmed(false); // tap GUN (or F/Q on desktop) to draw the weapon
+qualityListeners.push((low) => {
+  traffic.setLowQuality?.(low);
+  police.setLowQuality?.(low);
+  gangs.setLowQuality?.(low);
+  combat.setLowQuality?.(low);
+});
+settings._apply();
+
 const missions = new Missions(scene, world, {
   reward: (amount) => {
     save.money += amount;
@@ -339,6 +364,15 @@ function handleActions() {
     }
     return;
   }
+  if (!player.vehicle) {
+    if (input.consume('armed')) {
+      combat.setArmed(!combat.isArmed());
+      hud.toast(combat.isArmed() ? `WEAPON DRAWN · ${combat.state().label}` : 'WEAPON HOLSTERED');
+    }
+    if (input.isDown('fire') || input.isDown('aim')) combat.setArmed(true);
+    if (input.consume('weapon')) hud.toast(combat.cycleWeapon().label);
+    if (input.consume('reload')) combat.reload();
+  }
   if (input.consume('e')) {
     if (player.vehicle) {
       if (Math.abs(player.vehicle.speed) > 8) {
@@ -405,8 +439,7 @@ function handleActions() {
   if (input.consume('time')) {
     const h = currentHours();
     const night = h >= 7 && h < 19;
-    sessionStartHours = night ? 23 : 12;
-    gameTime = 0;
+    clockHours = night ? 23 : 12;
     hud.toast(night ? 'NIGHT MODE' : 'DAY MODE');
   }
 }
@@ -461,6 +494,21 @@ function handleGarage(action) {
     economy.restore([descriptor]);
     player.setVehicle(economy.ownedVehicles[0]);
     hud.toast('OWNED VEHICLE READY');
+    saveGame(save, true);
+    return;
+  }
+  if (action === 'spray') {
+    if (wanted.stars <= 0) {
+      hud.toast('NO HEAT TO CLEAR');
+      return;
+    }
+    if (!spend(750)) return;
+    wanted.clear(true);
+    police.clearAll();
+    gangs.clearAll();
+    combat.reset();
+    if (player.vehicle) player.vehicle.setColor(economy.nextPaint(player.vehicle.color));
+    hud.toast('HEAT CLEARED — $750');
     saveGame(save, true);
     return;
   }
@@ -534,17 +582,22 @@ function applySlotState(slot, state) {
   if (player.vehicle) player.exitVehicle(world);
   wanted.clear(true);
   police.clearAll();
+  gangs.clearAll();
+  combat.reset();
   economy.restore(save.owned || []);
   player.hp = 100;
   player.armor = save.armor || 0;
   const spawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
   player.respawnAt(spawn.x, spawn.z, 0);
-  sessionStartHours = save.hours || 8;
+  clockHours = save.hours || 8;
   gameTime = 0;
   missions.storyStep = save.storyStep || 0;
   settings.mode = ['auto', 'high', 'medium', 'low'].includes(save.quality) ? save.quality : 'auto';
   settings.autoTier = Number.isFinite(save.autoTier) ? Math.max(0, Math.min(2, Math.round(save.autoTier))) : 1;
   settings.showFps = save.showFps !== false;
+  settings.dayLength = [5, 10, 20, 40].includes(Number(save.dayLength)) ? Number(save.dayLength) : 10;
+  settings.autoAim = save.autoAim !== false;
+  combat.setAutoAim(settings.autoAim);
   weather.setMode(save.weather || 'auto');
   player.applyStyle(save.style);
   audio.setRadio(save.radio || 0);
@@ -673,6 +726,8 @@ function respawn() {
   }
   wanted.clear(true);
   police.clearAll();
+  gangs.clearAll();
+  combat.reset();
   const spawn = world.nearestRoad(0, 65);
   player.respawnAt(spawn.x, spawn.z, 0);
   player.armor = Math.floor(player.armor / 2);
@@ -702,6 +757,8 @@ function beginBusted() {
   }
   wanted.clear(true);
   police.clearAll();
+  gangs.clearAll();
+  combat.reset();
   hud.showBusted(`FINE $${fine}  ·  ${bustRelease}`);
   audio.blip(196, 0.5, 'square', 0.14);
   audio.blip(146, 0.55, 'sawtooth', 0.1);
@@ -740,6 +797,7 @@ function threatAngle() {
   threatDist = Infinity;
   for (const v of police.cars) noteThreat(v.pos);
   for (const o of police.officers) noteThreat(o.pos);
+  for (const t of combat.threats()) noteThreat(t);
   for (const v of traffic.vehicles) if (v !== player.vehicle) noteThreat(v.pos);
   if (threatDist > 60 ** 2) return Math.random() * Math.PI * 2;
   const dx = threatX - player.pos.x;
@@ -756,15 +814,18 @@ function frame(now) {
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
+  clockHours = (clockHours + dt * (24 / (Math.max(1, save.dayLength || 10) * 60))) % 24;
   input.poll();
   if (menu.isOpen && photo.active) photo.exit();
   // One mode drives both the button set and the input context. The joystick
   // stays available in every situation; the bottom-centre zone stays empty.
   const nearVehicle = !player.vehicle && !!traffic.nearestVehicle(player.pos);
+  const armed = !player.vehicle && !photo.active && !menu.isOpen && !settings.isOpen && combat.isArmed();
   const hudMode = photo.active ? 'photo'
     : (menu.isOpen || settings.isOpen) ? 'menu'
       : player.vehicle ? (player.vehicle.type === 'bike' ? 'bike' : 'car')
-        : nearVehicle ? 'nearVehicle' : 'foot';
+        : armed ? 'armed'
+          : nearVehicle ? 'nearVehicle' : 'foot';
   input.setContext(hudMode);
   hud.setMode(hudMode, {
     nitro: player.vehicle ? player.vehicle.boost : 0,
@@ -809,6 +870,21 @@ function frame(now) {
     wreck.health = 0;
     wreck.speed = 0;
     hud.toast('VEHICLE WRECKED');
+  }
+
+  if (!photo.active && !menu.isOpen) {
+    const aimYaw = combat.resolveAimYaw(cameraYaw, {
+      aiming: input.isDown('aim'),
+      autoAim: save.autoAim !== false,
+    });
+    combat.update(dt, {
+      time: gameTime,
+      aimYaw,
+      firing: input.isDown('fire'),
+      aiming: input.isDown('aim'),
+      autoAim: save.autoAim !== false,
+    });
+    gangs.update(dt, player, wanted, gameTime);
   }
 
   traffic.update(dt, player, wanted.stars, weather.grip);
@@ -871,6 +947,8 @@ function frame(now) {
   hudFrame.armor = player.armor;
   hudFrame.speed = player.speed;
   hudFrame.mode = player.mode;
+  hudFrame.weapon = combat.state();
+  input.setButtonLabel('weapon', hudFrame.weapon.label);
   hudFrame.heat = wanted.hudState();
   hudFrame.weather = weather.label();
   hudFrame.signal = lights.status(player);
@@ -900,4 +978,5 @@ requestAnimationFrame(frame);
 window.__jha = {
   player, world, traffic, police, missions, wanted, economy, menu, look, save,
   settings, minimap, lights, weather, audio, hud, input, photo, achievements, layout: hud.zones,
+  combat, gangs,
 };

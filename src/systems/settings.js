@@ -8,6 +8,7 @@ const TIERS = [
   { key: 'low', label: 'LOW', dpr: 1.25, bloom: false, shadows: false, shadowSize: 512 },
 ];
 const MODES = ['auto', 'high', 'medium', 'low'];
+const DAY_LENGTHS = [5, 10, 20, 40];
 
 export class Settings {
   constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {}, onEditHud = () => {}, onQuality = () => {} } = {}) {
@@ -23,6 +24,8 @@ export class Settings {
     const fallbackTier = isMobile ? 1 : 0;
     this.autoTier = clamp(Number.isFinite(save.autoTier) ? Math.round(save.autoTier) : fallbackTier, 0, 2);
     this.showFps = save.showFps !== false;
+    this.dayLength = DAY_LENGTHS.includes(Number(save.dayLength)) ? Number(save.dayLength) : 10;
+    this.autoAim = save.autoAim !== false;
     this.isOpen = false;
     this.fpsSmooth = 60;
     this.fpsTimer = 0;
@@ -51,6 +54,8 @@ export class Settings {
         <button class="settings-toggle" id="fps-toggle">FPS METER: ON</button>
         <button class="settings-toggle" id="look-button">CHARACTER LOOK</button>
         <button class="settings-toggle" id="edit-hud-button">EDIT HUD</button>
+        <button class="settings-toggle" id="day-length-button">DAY LENGTH: 10 MIN</button>
+        <button class="settings-toggle" id="auto-aim-button">AUTO-AIM: ON</button>
         <div class="settings-stat" id="settings-stat">60 FPS · AUTO · MEDIUM</div>
         <div class="settings-tip">Settings are saved automatically.</div>
         <div class="settings-label" style="padding-top:10px">SAVE SLOTS</div>
@@ -64,6 +69,8 @@ export class Settings {
     this.fpsToggle = this.overlay.querySelector('#fps-toggle');
     this.lookButton = this.overlay.querySelector('#look-button');
     this.editHudButton = this.overlay.querySelector('#edit-hud-button');
+    this.dayLengthButton = this.overlay.querySelector('#day-length-button');
+    this.autoAimButton = this.overlay.querySelector('#auto-aim-button');
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
 
@@ -87,6 +94,17 @@ export class Settings {
     this.editHudButton.addEventListener('click', () => {
       this.close();
       this.onEditHud();
+    });
+    this.dayLengthButton.addEventListener('click', () => {
+      const index = DAY_LENGTHS.indexOf(this.dayLength);
+      this.dayLength = DAY_LENGTHS[(index + 1) % DAY_LENGTHS.length];
+      this._apply();
+      this.toast(`DAY LENGTH: ${this.dayLength} MIN`);
+    });
+    this.autoAimButton.addEventListener('click', () => {
+      this.autoAim = !this.autoAim;
+      this._apply();
+      this.toast(`AUTO-AIM: ${this.autoAim ? 'ON' : 'OFF'}`);
     });
     this._renderSlots();
 
@@ -138,6 +156,8 @@ export class Settings {
     this.save.quality = this.mode;
     this.save.autoTier = this.autoTier;
     this.save.showFps = this.showFps;
+    this.save.dayLength = this.dayLength;
+    this.save.autoAim = this.autoAim;
 
     for (const btn of this.qualityButtons) {
       const on = btn.dataset.mode === this.mode;
@@ -145,6 +165,10 @@ export class Settings {
     }
     this.fpsToggle.textContent = `FPS METER: ${this.showFps ? 'ON' : 'OFF'}`;
     this.fpsToggle.classList.toggle('active', this.showFps);
+    this.dayLengthButton.textContent = `DAY LENGTH: ${this.dayLength} MIN`;
+    this.dayLengthButton.classList.toggle('active', this.dayLength !== 10);
+    this.autoAimButton.textContent = `AUTO-AIM: ${this.autoAim ? 'ON' : 'OFF'}`;
+    this.autoAimButton.classList.toggle('active', this.autoAim);
     if (this.fpsEl) this.fpsEl.style.display = this.showFps ? 'block' : 'none';
     this._renderFps();
     saveGame(this.save, true);

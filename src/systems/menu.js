@@ -137,6 +137,7 @@ export class Menu {
         <button class="menu-item" data-action="engine"><span class="menu-item-title">ENGINE TUNE</span><span class="menu-item-price">${money(PRICES.engine)}</span></button>
         <button class="menu-item" data-action="body"><span class="menu-item-title">REINFORCED BODY</span><span class="menu-item-price">${money(PRICES.body)}</span></button>
         <button class="menu-item" data-action="paint"><span class="menu-item-title">PAINT JOB</span><span class="menu-item-price">${money(PRICES.paint)}</span></button>
+        <button class="menu-item" data-action="spray"><span class="menu-item-title">PAY 'N' SPRAY</span><span class="menu-item-price">$750</span></button>
         <button class="menu-item" data-action="drive"><span class="menu-item-title">SPAWN / DRIVE OWNED</span><span class="menu-item-sub">Closest owned vehicle or a fresh one.</span></button>
       </div>
       <div class="menu-note">Upgrades and paint apply to the vehicle you are driving.</div>`);

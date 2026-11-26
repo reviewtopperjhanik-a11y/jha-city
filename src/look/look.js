@@ -3,7 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { C } from './palette.js';
+import { C, SKY } from './palette.js';
 import { clamp, smooth, TAU } from '../util/math.js';
 
 const col = (hex) => new THREE.Color(hex);
@@ -124,8 +124,51 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
   const sunScratch = col(0);
   const bottomScratch = col(0);
   const dirScratch = new THREE.Vector3();
+  // Registration-time allocations only; setTime walks these with index loops
+  // and reuses the cached colours, so the night/water cycle stays GC-free.
+  const nightLights = [];
+  const waterUniforms = [];
   let viewW = window.innerWidth;
   let viewH = window.innerHeight;
+
+  function registerNightLight(material, dayColorHex, nightColorHex, { dayOpacity = 1, nightOpacity = 1 } = {}) {
+    if (!material || !material.color) return null;
+    // Opacity only blends when the material is transparent. Leave vertexColors,
+    // toneMapped and every other constructor semantic untouched.
+    if (dayOpacity < 1 || nightOpacity < 1) {
+      material.transparent = true;
+      material.needsUpdate = true;
+    }
+    const entry = {
+      material,
+      day: col(dayColorHex),
+      night: col(nightColorHex),
+      dayOpacity,
+      nightOpacity,
+    };
+    nightLights.push(entry);
+    return entry;
+  }
+
+  function registerWater(uniform) {
+    if (!uniform || typeof uniform !== 'object') return null;
+    waterUniforms.push(uniform);
+    return uniform;
+  }
+
+  function applyNightLights() {
+    for (let i = 0; i < nightLights.length; i++) {
+      const entry = nightLights[i];
+      entry.material.color.copy(entry.night).lerp(entry.day, state.day);
+      entry.material.opacity = entry.nightOpacity + (entry.dayOpacity - entry.nightOpacity) * state.day;
+    }
+  }
+
+  function applyWater() {
+    for (let i = 0; i < waterUniforms.length; i++) {
+      waterUniforms[i].value = performance.now() * 0.0006;
+    }
+  }
 
   function applyAtmosphere() {
     const w = state.weather;
@@ -146,9 +189,12 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     const angle = ((h - 6) / 24) * TAU;
     const elev = Math.sin(angle);
     const sunUp = clamp(elev * 1.45 + 0.2, 0, 1);
-    // 11:00-14:00 reads as clear blue; dusk keeps its sunset band; night is neon.
+    // 11:00-14:00 reads as clear blue; morning and dusk get their own bands;
+    // night falls back to deep purple so the city's neon stays readable.
     const midday = smooth(clamp((h - 9.5) / 2, 0, 1)) * smooth(clamp((16.5 - h) / 2.5, 0, 1));
     const twilight = clamp(1 - Math.abs(elev) * 3.2, 0, 1);
+    const morning = smooth(clamp((h - 5) / 2.2, 0, 1)) * smooth(clamp((9.2 - h) / 2.4, 0, 1));
+    const dusk = smooth(clamp((h - 15.8) / 2, 0, 1)) * smooth(clamp((20 - h) / 2.4, 0, 1));
     const night = 1 - sunUp;
     state.day = clamp(sunUp * 0.75 + midday * 0.25, 0.12, 1);
 
@@ -158,30 +204,38 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     sun.target.position.set(0, 0, 0);
     u.sunDir.value.copy(dirScratch);
 
-    mixInto(horizonScratch, 0x232a55, C.tangerine, clamp(sunUp - midday * 0.85, 0, 1));
+    mixInto(horizonScratch, SKY.nightHorizon, C.tangerine, clamp(sunUp - midday * 0.85, 0, 1));
     horizonScratch.lerp(scratchMix.set(0x8bbcf5), midday * 0.92);
+    horizonScratch.lerp(scratchMix.set(SKY.morningHorizon), morning * 0.55);
+    horizonScratch.lerp(scratchMix.set(SKY.duskRose), dusk * 0.5);
     horizonScratch.lerp(scratchMix.set(C.flamingo), twilight * (elev >= 0 ? 0.62 : 0.34));
-    horizonScratch.lerp(scratchMix.set(0x151a3a), night * (1 - twilight) * 0.8);
+    horizonScratch.lerp(scratchMix.set(SKY.nightDeep), night * (1 - twilight) * 0.8);
 
-    mixInto(topScratch, 0x11173a, 0x2f6fc4, midday);
+    mixInto(topScratch, SKY.nightTop, SKY.middayTop, midday);
+    topScratch.lerp(scratchMix.set(SKY.morningTop), morning * 0.55);
+    topScratch.lerp(scratchMix.set(SKY.duskTop), dusk * 0.35);
     topScratch.lerp(scratchMix.set(C.dusk), sunUp * 0.2);
-    topScratch.lerp(scratchMix.set(0x0b0d24), night * 0.5);
-    mixInto(groundScratch, 0x303a5a, C.sand, state.day * 0.5);
-    mixInto(skyLightScratch, 0x7d91d8, 0xbfe3ff, midday);
-    mixInto(sunScratch, C.amber, 0xfff3d0, state.day);
+    topScratch.lerp(scratchMix.set(SKY.nightTopDeep), night * 0.5);
+    mixInto(groundScratch, SKY.groundNight, C.sand, state.day * 0.5);
+    mixInto(skyLightScratch, SKY.hemiNight, SKY.hemiDay, midday);
+    skyLightScratch.lerp(scratchMix.set(SKY.morningLight), morning * 0.25);
+    skyLightScratch.lerp(scratchMix.set(SKY.duskLight), dusk * 0.25);
+    mixInto(sunScratch, C.amber, SKY.middaySun, state.day);
 
     u.horizonColor.value.copy(horizonScratch);
     u.topColor.value.copy(topScratch);
-    mixInto(bottomScratch, 0x111738, horizonScratch, 0.45);
+    mixInto(bottomScratch, SKY.bottomNight, horizonScratch, 0.45);
     u.bottomColor.value.copy(bottomScratch);
     u.sunColor.value.copy(sunScratch);
     hemi.color.copy(skyLightScratch);
     hemi.groundColor.copy(groundScratch);
     hemi.intensity = 0.7 + state.day * 0.55;
-    mixInto(sunScratch, elev > 0 ? C.tangerine : 0xa8bdff, 0xffeed6, state.day);
+    mixInto(sunScratch, elev > 0 ? C.tangerine : SKY.moon, 0xffeed6, state.day);
     sun.color.copy(sunScratch);
     horizonNow.copy(horizonScratch);
     applyAtmosphere();
+    applyNightLights();
+    applyWater();
   }
 
   function resize(w, h) {
@@ -237,6 +291,10 @@ export function createLook(scene, camera, renderer, { bloomEnabled = true, dpr =
     sun,
     hemi,
     state,
+    nightLights,
+    waterUniforms,
+    registerNightLight,
+    registerWater,
     setTime,
     setWeather,
     resize,

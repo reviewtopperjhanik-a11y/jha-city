@@ -5,6 +5,8 @@
 const PAD_BUTTONS = [
   [0, 'jump'], [1, 'hb'], [2, 'horn'], [3, 'radio'],
   [5, 'boost'], [6, 'brake'], [7, 'gas'], [8, 'look'], [9, 'photo'],
+  // L3/R3 are unused by driving; they become fire/aim in armed mode.
+  [10, 'fire'], [11, 'aim'],
 ];
 
 const KEY_ACTIONS = {
@@ -25,6 +27,10 @@ const KEY_ACTIONS = {
   KeyB: 'radio',
   KeyK: 'photo',
   KeyL: 'look',
+  KeyF: 'fire',
+  KeyQ: 'aim',
+  KeyZ: 'reload',
+  KeyX: 'weapon',
 };
 
 export class Input {

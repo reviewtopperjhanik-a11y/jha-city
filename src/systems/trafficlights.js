@@ -26,6 +26,10 @@ export class TrafficLights {
     this.timer = PHASES[0].time;
     this.heads = [];
     this._status = { label: '', tone: '' };
+    // Small ring: callers may compare two stops in the same frame, but no new
+    // result object is allocated for every car on every frame.
+    this._stopPool = Array.from({ length: 16 }, () => ({ index: 0, dist: 0, x: 0, z: 0 }));
+    this._stopCursor = 0;
 
     const housingMat = new THREE.MeshToonMaterial({ color: 0x171b2e, gradientMap: look?.gradientMap });
     const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
@@ -122,7 +126,13 @@ export class TrafficLights {
     const center = roadLine(index);
     const dist = (center - coord) * (dir > 0 ? 1 : -1);
     if (dist < -1) return null;
-    return { index, dist, x: axis === 'z' ? pos.x : center, z: axis === 'z' ? center : pos.x };
+    const out = this._stopPool[this._stopCursor];
+    this._stopCursor = (this._stopCursor + 1) % this._stopPool.length;
+    out.index = index;
+    out.dist = dist;
+    out.x = axis === 'z' ? pos.x : center;
+    out.z = axis === 'z' ? center : pos.x;
+    return out;
   }
 
   status(player) {

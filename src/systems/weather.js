@@ -11,8 +11,8 @@ const AUTO_STATES = [
 ];
 const SNOW_TARGET = 0.68;
 
-// One recycled batch of short line segments: rain reads as streaks, snow as
-// tiny near-dots. No textures, no per-frame geometry or particle allocations.
+// Two recycled batches: rain reads as short line streaks, snow as a preallocated
+// Points batch with a procedural soft dot. No textures or per-frame allocations.
 export class Weather {
   constructor(scene, look, world, callbacks = {}) {
     this.scene = scene;
@@ -28,6 +28,7 @@ export class Weather {
     this.count = 560;
     this.local = new Float32Array(this.count * 3);
     this.positions = new Float32Array(this.count * 6);
+    this.snowPositions = new Float32Array(this.count * 3);
     this.speeds = new Float32Array(this.count);
     this.drifts = new Float32Array(this.count);
     for (let i = 0; i < this.count; i++) this._respawn(i, true);
@@ -45,6 +46,41 @@ export class Weather {
     this.drops.frustumCulled = false;
     this.drops.visible = false;
     scene.add(this.drops);
+
+    const snowGeometry = new THREE.BufferGeometry();
+    snowGeometry.setAttribute('position', new THREE.BufferAttribute(this.snowPositions, 3));
+    const snowMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        color: { value: new THREE.Color(0xe8f2ff) },
+        opacity: { value: 0 },
+        size: { value: 4 },
+      },
+      vertexShader: `
+        uniform float size;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = size * clamp(34.0 / -mv.z, 0.6, 1.6);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 color;
+        uniform float opacity;
+        void main() {
+          vec2 d = gl_PointCoord - vec2(0.5);
+          float a = 1.0 - smoothstep(0.18, 0.5, length(d));
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(color, a * opacity);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.snowPoints = new THREE.Points(snowGeometry, snowMaterial);
+    this.snowPoints.frustumCulled = false;
+    this.snowPoints.visible = false;
+    scene.add(this.snowPoints);
     look.setWeather?.(0);
   }
 
@@ -97,7 +133,10 @@ export class Weather {
 
   setLowQuality(low) {
     this.lowQuality = !!low;
-    if (this.lowQuality) this.drops.visible = false;
+    if (this.lowQuality) {
+      this.drops.visible = false;
+      this.snowPoints.visible = false;
+    }
   }
 
   _pickAutoState() {
@@ -136,14 +175,17 @@ export class Weather {
     const target = this.target;
     this.level = damp(this.level, target, 0.55, dt);
     if (Math.abs(this.level - target) < 0.008) this.level = target;
+    this.world?.setWetness?.(this.level);
     this.look.setWeather?.(this.level);
 
-    const visible = !this.lowQuality && this.level > 0.03;
-    this.drops.visible = visible;
-    if (!visible) return;
     const snow = this.snowing;
+    const visible = !this.lowQuality && this.level > 0.03;
+    this.drops.visible = visible && !snow;
+    this.snowPoints.visible = visible && snow;
+    if (!visible) return;
     this.drops.material.color.setHex(snow ? 0xe8f2ff : 0xbfe3ff);
     this.drops.material.opacity = clamp(0.16 + this.level * (snow ? 0.44 : 0.5), 0, 0.66);
+    if (snow) this.snowPoints.material.uniforms.opacity.value = clamp(0.28 + this.level * 0.55, 0, 0.78);
     const px = player.pos.x;
     const pz = player.pos.z;
     const fallScale = snow ? 0.16 : 0.45 + this.level * 0.75;
@@ -164,13 +206,20 @@ export class Weather {
       this.positions[p + 3] = x + slant * this.drifts[i];
       this.positions[p + 4] = y + streak;
       this.positions[p + 5] = z + slant * 0.35;
+      this.snowPositions[k] = x;
+      this.snowPositions[k + 1] = y;
+      this.snowPositions[k + 2] = z;
     }
     this.drops.geometry.attributes.position.needsUpdate = true;
+    this.snowPoints.geometry.attributes.position.needsUpdate = true;
   }
 
   dispose() {
     this.scene.remove(this.drops);
+    this.scene.remove(this.snowPoints);
     this.drops.geometry.dispose();
     this.drops.material.dispose();
+    this.snowPoints.geometry.dispose();
+    this.snowPoints.material.dispose();
   }
 }

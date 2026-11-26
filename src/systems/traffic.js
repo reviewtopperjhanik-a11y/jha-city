@@ -6,6 +6,8 @@ import { makeRng, rand, randInt, pick } from '../util/rng.js';
 import { clamp, damp, dist2 } from '../util/math.js';
 
 const carColors = CAR_COLORS;
+// Shared, read-only input frame: AI cars must not allocate a literal per frame.
+const AI_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
 
 function paintGeo(g, color, variance = 0.08) {
   const c = color.clone().multiplyScalar(0.94 + Math.random() * variance);
@@ -121,6 +123,10 @@ export class Traffic {
     this.police = [];
     this.peds = [];
     this.crimeCooldown = 0;
+    this.lowQuality = false;
+    this.activeVehicles = 0;
+    this.activePeds = 0;
+    this._playerVehicle = null;
 
     for (let i = 0; i < 16; i++) {
       const p = world.randomRoadPoint(this.rng);
@@ -150,7 +156,8 @@ export class Traffic {
     const addPed = (x, z) => {
       const mesh = new THREE.Mesh(variants[this.peds.length % variants.length], pedMat);
       mesh.castShadow = true;
-      mesh.scale.setScalar(rand(this.rng, 0.92, 1.08));
+      const baseScale = rand(this.rng, 0.92, 1.08);
+      mesh.scale.setScalar(baseScale);
       const umbrella = new THREE.Group();
       const canopy = new THREE.Mesh(umbrellaGeo, umbrellaMats[this.peds.length % umbrellaMats.length]);
       canopy.position.y = 2.42;
@@ -171,6 +178,14 @@ export class Traffic {
         phase: rand(this.rng, 0, Math.PI * 2),
         umbrella,
         mesh,
+        // Phase 3: all state is allocated once. Downed pedestrians keep this
+        // same record and mesh through their fall and respawn.
+        baseScale,
+        hp: 100,
+        downed: false,
+        downTimer: 0,
+        dodge: 0,
+        crossing: { active: false, axis: 'x', line: 0, coord: 0, side: 1 },
       });
     };
     // A crowd near the start so the first street feels alive.
@@ -186,6 +201,72 @@ export class Traffic {
       addPed(x, z);
     }
     this.crimeGrace = 6;
+  }
+
+  // Quality switches only toggle a flag: every vehicle, pedestrian, mesh and
+  // geometry stays in place. update() decides which ones actually run.
+  setLowQuality(isLow) {
+    this.lowQuality = !!isLow;
+  }
+
+  // Combat/gameplay hook: 0 when still standing, true on the hit that drops a
+  // pedestrian. No geometry, material or mesh is created here.
+  knockPed(ped, amount = 100) {
+    if (!ped || ped.downed || ped.hp <= 0) return false;
+    ped.hp -= Math.max(0, amount || 0);
+    if (ped.hp > 0) return false;
+    ped.hp = 0;
+    ped.downed = true;
+    ped.downTimer = 3.4;
+    ped.dodge = 0;
+    if (ped.crossing) ped.crossing.active = false;
+    ped.mesh.rotation.set(Math.PI / 2, ped.heading, 0);
+    ped.mesh.position.y = 0.16;
+    ped.mesh.scale.setScalar(ped.baseScale * 0.92);
+    return true;
+  }
+
+  // Reuse the fallen pedestrian's own record and mesh; pick a kerbside point
+  // clear of buildings so the crowd does not respawn inside a wall.
+  _respawnPed(p) {
+    const G = this.world.GRID;
+    const off = G.ROAD / 2 + 3.2;
+    const vi = this._nearestLine(p.x);
+    const zi = this._nearestLine(p.z);
+    const vx = this.world.roadLine(vi);
+    const hz = this.world.roadLine(zi);
+    const alongV = clamp(p.z, -G.HALF + 20, G.HALF - 20);
+    const alongH = clamp(p.x, -G.HALF + 20, G.HALF - 20);
+    if (Math.abs(p.x - vx) <= Math.abs(p.z - hz)) {
+      let side = p.x >= vx ? 1 : -1;
+      let c = this.world.collide(vx + side * off, alongV, 0.5);
+      if (c.hit) {
+        side = -side;
+        c = this.world.collide(vx + side * off, alongV, 0.5);
+      }
+      p.x = c.hit ? clamp(p.x, -G.HALF + 20, G.HALF - 20) : c.x;
+      p.z = c.hit ? alongV : c.z;
+      p.heading = side > 0 ? 0 : Math.PI;
+    } else {
+      let side = p.z >= hz ? 1 : -1;
+      let c = this.world.collide(alongH, hz + side * off, 0.5);
+      if (c.hit) {
+        side = -side;
+        c = this.world.collide(alongH, hz + side * off, 0.5);
+      }
+      p.x = c.hit ? alongH : c.x;
+      p.z = c.hit ? clamp(p.z, -G.HALF + 20, G.HALF - 20) : c.z;
+      p.heading = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    p.hp = 100;
+    p.downed = false;
+    p.downTimer = 0;
+    p.dodge = 0;
+    p.crossing.active = false;
+    p.turn = 0.8;
+    p.mesh.rotation.set(0, p.heading, 0);
+    p.mesh.scale.setScalar(p.baseScale);
+    p.mesh.position.set(p.x, 0, p.z);
   }
 
   get enterables() {
@@ -215,29 +296,50 @@ export class Traffic {
     const r = v.route;
     const coord = r.axis === 'z' ? v.pos.z : v.pos.x;
     let best = null;
-    let bestGap = 11;
+    let bestGap = 13;
     for (const other of this.vehicles) {
       if (other === v) continue;
       let axis = r.axis;
       let dir = r.dir;
-      let line = r.line;
       if (other.ai && other.route) {
-        if (other.route.axis !== r.axis || other.route.line !== r.line || other.route.dir !== r.dir) continue;
-      } else if (other.role === 'player') {
-        const h = other.heading;
+        if (other.route.axis !== r.axis || other.route.dir !== r.dir) continue;
+      } else if (other === this._playerVehicle || other.role === 'player' || (!other.ai && other.heading != null)) {
+        const h = other.heading || 0;
         axis = Math.abs(Math.sin(h)) > 0.5 ? 'x' : 'z';
         dir = axis === 'z' ? (Math.cos(h) >= 0 ? 1 : -1) : (Math.sin(h) >= 0 ? 1 : -1);
-        line = this._nearestLine(axis === 'z' ? other.pos.x : other.pos.z);
-        if (axis !== r.axis || line !== r.line) continue;
       } else continue;
+      if (axis !== r.axis) continue;
       const oc = axis === 'z' ? other.pos.z : other.pos.x;
+      const cross = axis === 'z' ? Math.abs(other.pos.x - v.pos.x) : Math.abs(other.pos.z - v.pos.z);
+      if (cross > 5.2) continue;
       const gap = (oc - coord) * dir;
-      if (gap > 0.5 && gap < bestGap) {
+      if (gap > 0.6 && gap < bestGap) {
         bestGap = gap;
         best = other;
       }
     }
-    return best ? { vehicle: best, gap: bestGap } : null;
+    const out = this._aheadResult || (this._aheadResult = { vehicle: null, gap: 0 });
+    out.vehicle = best;
+    out.gap = bestGap;
+    return out.vehicle ? out : null;
+  }
+
+  // Pedestrians standing in the lane (typically at a zebra crossing) are hard
+  // obstacles. Squared distances keep this scan allocation-free.
+  _pedOnPath(v) {
+    if (!this.peds) return false;
+    const r = v.route;
+    const coord = r.axis === 'z' ? v.pos.z : v.pos.x;
+    const lateral = r.axis === 'z' ? v.pos.x : v.pos.z;
+    for (let i = 0; i < this.peds.length; i++) {
+      const p = this.peds[i];
+      if (p.downed) continue;
+      const along = (r.axis === 'z' ? p.z - coord : p.x - coord) * r.dir;
+      if (along < 1 || along > 10) continue;
+      const across = r.axis === 'z' ? Math.abs(p.x - lateral) : Math.abs(p.z - lateral);
+      if (across < 2.4) return true;
+    }
+    return false;
   }
 
   _route(v, dt, surfaceGrip = 1) {
@@ -251,7 +353,10 @@ export class Traffic {
     }
     if (this.lights) {
       const stop = this.lights.nextStop(v.pos, r.axis, r.dir);
-      if (stop && stop.dist > 1.5 && stop.dist < 15 && !this.lights.canGo(r.axis)) target = 0;
+      if (stop && stop.dist > -0.5 && stop.dist < 15) {
+        if (!this.lights.canGo(r.axis)) target = 0;
+        else if (this.lights.caution(r.axis) && stop.dist > 3) target = Math.min(target, 4);
+      }
     }
     for (const incident of this.incidents) {
       const along = (r.axis === 'z' ? incident.z - v.pos.z : incident.x - v.pos.x) * r.dir;
@@ -259,10 +364,15 @@ export class Traffic {
       if (along > 0 && along < 16 && across < 12) target = Math.min(target, 3);
     }
     const ahead = this._vehicleAhead(v);
-    if (ahead) target = Math.min(target, Math.max(0, ahead.vehicle.speed - 1 + (ahead.gap - 4) * 0.35));
+    if (ahead) {
+      // Hold a safe gap behind stopped traffic instead of nudging through it.
+      target = Math.min(target, Math.max(0, ahead.vehicle.speed + (ahead.gap - 6) * 0.55 - 0.6));
+      if (ahead.gap < 6) target = 0;
+    }
+    if (this._pedOnPath(v)) target = Math.min(target, 0.8);
     v.targetSpeed = clamp(target, 0, 16);
 
-    v.applyInput(dt, { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false }, this.world, surfaceGrip);
+    v.applyInput(dt, AI_INPUT, this.world, surfaceGrip);
     v.speed += (v.targetSpeed - v.speed) * dt * 1.4;
     const desired = this._laneOffset(r.axis, r.dir);
     v.laneOffset = v.laneOffset == null ? desired : damp(v.laneOffset, desired, 2.6, dt);
@@ -289,6 +399,38 @@ export class Traffic {
   _nearestLine(v) {
     const i = Math.round((v + this.world.GRID.HALF) / this.world.GRID.BLOCK);
     return clamp(i, 0, this.world.GRID.N);
+  }
+
+  // Final positional pass: two cars sharing a lane never overlap, so a car can
+  // not drive through a queue that has already stopped.
+  _separateTraffic() {
+    const list = this.vehicles;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!a.ai || !a.route || a._phase3Active === false) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (!b.ai || !b.route || b._phase3Active === false) continue;
+        const ar = a.route;
+        const br = b.route;
+        if (ar.axis !== br.axis || ar.line !== br.line || ar.dir !== br.dir) continue;
+        const dx = b.pos.x - a.pos.x;
+        const dz = b.pos.z - a.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= 3.2) continue;
+        const push = (3.2 - d) * 0.5;
+        const along = ar.axis === 'z' ? (dz >= 0 ? 1 : -1) : (dx >= 0 ? 1 : -1);
+        if (ar.axis === 'z') {
+          a.pos.z -= along * push;
+          b.pos.z += along * push;
+        } else {
+          a.pos.x -= along * push;
+          b.pos.x += along * push;
+        }
+        if (a.speed > b.speed) a.speed = Math.min(a.speed, b.speed + 0.4);
+        else b.speed = Math.min(b.speed, a.speed + 0.4);
+      }
+    }
   }
 
   onHorn(pos) {
@@ -384,53 +526,201 @@ export class Traffic {
     v._sync(0);
   }
 
+  // Start a crossing only from the kerb beside an intersection. The zebra
+  // coordinate is snapped to one of the stripes drawn by the city.
+  _tryCross(p) {
+    if (p.crossing.active || p.downed || p.fleeing || p.gawk || p.dodge > 0) return false;
+    const G = this.world.GRID;
+    const off = G.ROAD / 2 + 2.6;
+    const vi = this._nearestLine(p.x);
+    const zi = this._nearestLine(p.z);
+    const vx = this.world.roadLine(vi);
+    const hz = this.world.roadLine(zi);
+    const dx = p.x - vx;
+    const dz = p.z - hz;
+    const alongZ = Math.abs(Math.cos(p.heading)) >= Math.abs(Math.sin(p.heading));
+    if (alongZ) {
+      if (Math.abs(Math.abs(dx) - off) > 5 || Math.abs(dz) > off + 7) return false;
+      p.crossing.axis = 'x';
+      p.crossing.line = zi;
+      p.crossing.coord = hz + clamp(Math.round(dz / 2.2), -3, 3) * 2.2;
+      p.crossing.side = dx >= 0 ? 1 : -1;
+      p.heading = p.crossing.side > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      if (Math.abs(Math.abs(dz) - off) > 5 || Math.abs(dx) > off + 7) return false;
+      p.crossing.axis = 'z';
+      p.crossing.line = vi;
+      p.crossing.coord = vx + clamp(Math.round(dx / 2.2), -3, 3) * 2.2;
+      p.crossing.side = dz >= 0 ? 1 : -1;
+      p.heading = p.crossing.side > 0 ? Math.PI : 0;
+    }
+    p.crossing.active = true;
+    p.turn = 1.4;
+    return true;
+  }
+
+  // Returns a speed multiplier: 0 while waiting for cross traffic to go red.
+  _crossStep(p, dt) {
+    const c = p.crossing;
+    const G = this.world.GRID;
+    const line = this.world.roadLine(c.line);
+    if (c.axis === 'x') {
+      p.z += (c.coord - p.z) * Math.min(1, dt * 8);
+      const side = p.x - line;
+      if (this.lights && (this.lights.canGo('x') || this.lights.caution('x')) && side * c.side > 3.5) {
+        p.heading = c.side > 0 ? -Math.PI / 2 : Math.PI / 2;
+        return 0;
+      }
+      if (side * -c.side > G.ROAD / 2 + 1.4) {
+        c.active = false;
+        return 1;
+      }
+      p.heading = c.side > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      p.x += (c.coord - p.x) * Math.min(1, dt * 8);
+      const side = p.z - line;
+      if (this.lights && (this.lights.canGo('z') || this.lights.caution('z')) && side * c.side > 3.5) {
+        p.heading = c.side > 0 ? Math.PI : 0;
+        return 0;
+      }
+      if (side * -c.side > G.ROAD / 2 + 1.4) {
+        c.active = false;
+        return 1;
+      }
+      p.heading = c.side > 0 ? Math.PI : 0;
+    }
+    return 1;
+  }
+
+  // Gentle pull back to the kerb line so walkers stay on the pavement.
+  _alignSidewalk(p, dt) {
+    if (p.crossing.active || p.fleeing || p.gawk || p.dodge > 0 || p.downed) return;
+    const G = this.world.GRID;
+    const off = G.ROAD / 2 + 2.6;
+    const vi = this._nearestLine(p.x);
+    const zi = this._nearestLine(p.z);
+    const vx = this.world.roadLine(vi);
+    const hz = this.world.roadLine(zi);
+    const dx = p.x - vx;
+    const dz = p.z - hz;
+    const t = Math.min(1, dt * 2.4);
+    const alongZ = Math.abs(Math.cos(p.heading)) >= Math.abs(Math.sin(p.heading));
+    if (alongZ) {
+      if (Math.abs(Math.abs(dx) - off) > 4.5) return;
+      p.x += (vx + (dx >= 0 ? off : -off) - p.x) * t;
+    } else {
+      if (Math.abs(Math.abs(dz) - off) > 4.5) return;
+      p.z += (hz + (dz >= 0 ? off : -off) - p.z) * t;
+    }
+  }
+
+  // Step off the path of any moving vehicle, including the player's car.
+  _dodgeOne(p, v, dt) {
+    if (!v || !v.pos) return false;
+    const speed = Math.abs(v.speed || 0);
+    if (speed < 2.5) return false;
+    const dx = p.x - v.pos.x;
+    const dz = p.z - v.pos.z;
+    if (dx * dx + dz * dz > 56) return false;
+    const h = v.heading || 0;
+    const along = dx * Math.sin(h) + dz * Math.cos(h);
+    if (along < -3 || along > 7) return false;
+    const sx = Math.cos(h);
+    const sz = -Math.sin(h);
+    let sign = sx * dx + sz * dz >= 0 ? 1 : -1;
+    const step = Math.min(2.4, 1.3 + speed * 0.08) * dt * 6;
+    let nx = p.x + sx * sign * step;
+    let nz = p.z + sz * sign * step;
+    let c = this.world.collide(nx, nz, 0.32);
+    if (c.hit) {
+      sign = -sign;
+      nx = p.x + sx * sign * step;
+      nz = p.z + sz * sign * step;
+      c = this.world.collide(nx, nz, 0.32);
+    }
+    if (!c.hit) {
+      p.x = nx;
+      p.z = nz;
+    }
+    p.heading = Math.atan2(sx * sign, sz * sign);
+    p.dodge = 0.32;
+    return true;
+  }
+
   _updatePeds(dt, player, wanted) {
+    this.activePeds = 0;
+    const low = this.lowQuality;
+    const px = player.pos.x;
+    const pz = player.pos.z;
     for (let i = 0; i < this.peds.length; i++) {
       const p = this.peds[i];
-      const d = dist2(p.x, p.z, player.pos.x, player.pos.z);
+      const d = dist2(p.x, p.z, px, pz);
+      let active = true;
+      if (low) {
+        active = p.downTimer > 0 || (d < 85 * 85 && (d < 32 * 32 || (i & 1) === 0));
+        if (active && this.activePeds >= 24 && p.downTimer <= 0) active = false;
+      }
+      p.mesh.visible = active;
+      if (!active) continue;
+      this.activePeds++;
+
+      if (p.downTimer > 0) {
+        p.downTimer -= dt;
+        if (p.downTimer > 0) continue;
+        this._respawnPed(p);
+      }
       p.umbrella.visible = !!this.weather?.isRaining();
       if (p.gawk) {
         p.gawk.life -= dt;
         if (p.gawk.life <= 0) p.gawk = null;
       }
       p.fleeing = !p.gawk && wanted > 0 && d < 26;
-      if (!p.gawk) {
+      if (p.dodge > 0) p.dodge -= dt;
+      if (!p.gawk && !p.crossing.active && p.dodge <= 0) {
         p.turn -= dt;
         if (p.turn <= 0) {
           p.turn = rand(this.rng, 2.6, 6.5);
-          p.heading += rand(this.rng, -1.1, 1.1);
+          if (!this._tryCross(p)) p.heading += rand(this.rng, -1.1, 1.1);
         }
       }
-      if (p.fleeing) p.heading = Math.atan2(p.x - player.pos.x, p.z - player.pos.z);
+      if (p.fleeing) p.heading = Math.atan2(p.x - px, p.z - pz);
       if (p.gawk) {
         const gd = dist2(p.x, p.z, p.gawk.x, p.gawk.z);
         const cx = gd > 0.9 ? p.gawk.x : p.gawk.incident.x;
         const cz = gd > 0.9 ? p.gawk.z : p.gawk.incident.z;
         p.heading = Math.atan2(cx - p.x, cz - p.z);
       }
-      const sp = p.fleeing ? p.speed * 3.4 : p.gawk ? p.speed * 1.2 : p.speed * (this.weather?.isRaining() ? 1.15 : 1);
+      let crossSpeed = 1;
+      if (p.crossing.active) crossSpeed = this._crossStep(p, dt);
+      if (p.dodge <= 0) {
+        for (let vi = 0; vi < this.vehicles.length; vi++) this._dodgeOne(p, this.vehicles[vi], dt);
+        if (player.vehicle) this._dodgeOne(p, player.vehicle, dt);
+      }
+      const sp = (p.fleeing ? p.speed * 3.4 : p.gawk ? p.speed * 1.2 : p.speed * (this.weather?.isRaining() ? 1.15 : 1)) * crossSpeed;
       const nx = p.x + Math.sin(p.heading) * sp * dt;
       const nz = p.z + Math.cos(p.heading) * sp * dt;
       const c = this.world.collide(nx, nz, 0.32);
       if (c.hit) {
         p.heading += Math.PI * (0.7 + this.rng() * 0.6);
         p.turn = 0.8;
+        if (p.crossing.active) p.crossing.active = false;
       } else {
         p.x = clamp(nx, -440, 440);
         p.z = clamp(nz, -440, 440);
+        this._alignSidewalk(p, dt);
       }
       // Pedestrians step aside instead of clipping through the player.
       const rr = player.vehicle ? 2.4 : 1.05;
-      const near = dist2(p.x, p.z, player.pos.x, player.pos.z);
+      const near = dist2(p.x, p.z, px, pz);
       if (near < rr) {
-        let px = p.x - player.pos.x;
-        let pz = p.z - player.pos.z;
-        if (Math.abs(px) < 0.001 && Math.abs(pz) < 0.001) {
-          px = Math.sin(player.heading + Math.PI);
-          pz = Math.cos(player.heading + Math.PI);
+        let ox = p.x - px;
+        let oz = p.z - pz;
+        if (Math.abs(ox) < 0.001 && Math.abs(oz) < 0.001) {
+          ox = Math.sin(player.heading + Math.PI);
+          oz = Math.cos(player.heading + Math.PI);
         }
-        const pd = Math.hypot(px, pz) || 1;
-        const safe = this.world.collide(player.pos.x + (px / pd) * rr, player.pos.z + (pz / pd) * rr, 0.32);
+        const pd = Math.hypot(ox, oz) || 1;
+        const safe = this.world.collide(px + (ox / pd) * rr, pz + (oz / pd) * rr, 0.32);
         p.x = safe.x;
         p.z = safe.z;
       }
@@ -451,16 +741,34 @@ export class Traffic {
     this.crimeCooldown = Math.max(0, this.crimeCooldown - dt);
     this.crimeGrace = Math.max(0, this.crimeGrace - dt);
     this.hornTime = Math.max(0, this.hornTime - dt);
+    this._playerVehicle = player.vehicle;
+    this.activeVehicles = 0;
     for (let i = this.incidents.length - 1; i >= 0; i--) {
       this.incidents[i].life -= dt;
       if (this.incidents[i].life <= 0) this.incidents.splice(i, 1);
     }
-    for (const v of this.vehicles) {
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
       v.accidentCooldown = Math.max(0, (v.accidentCooldown || 0) - dt);
-      if (v === player.vehicle) continue;
+      if (v === player.vehicle) {
+        v._phase3Active = true;
+        continue;
+      }
+      const d = dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z);
+      let active = true;
+      if (this.lowQuality) {
+        // Keep nearby parked cars for collision, the closest moving cars and
+        // half of the mid-range ones; hide the rest without removing them.
+        active = v.ai
+          ? d < 120 * 120 && (d < 45 * 45 || (i & 1) === 0) && this.activeVehicles < 8
+          : d < 120 * 120;
+      }
+      v._phase3Active = active;
+      v.mesh.visible = active;
+      if (!active) continue;
+      this.activeVehicles++;
       if (v.role === 'police' || v.role === 'suspect') continue;
       if (v.ai) {
-        const d = dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z);
         v.yieldToPlayer = d < 10 && Math.abs(v.speed - player.speed) > 5;
         this._route(v, dt, surfaceGrip);
         if (d < 2.4 && player.speed > 8 && this.crimeCooldown <= 0 && this.crimeGrace <= 0) {
@@ -472,8 +780,11 @@ export class Traffic {
     this._updatePeds(dt, player, wanted);
     // Resolve car-to-car contact after everyone has moved, so a parked car is
     // also shoved and its mesh follows the new position.
-    for (const v of this.vehicles) {
-      if (v !== player.vehicle) this._resolvePlayerCollision(v, player);
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      if (v === player.vehicle || v._phase3Active === false) continue;
+      this._resolvePlayerCollision(v, player);
     }
+    this._separateTraffic();
   }
 }

@@ -14,6 +14,8 @@ const DEFAULTS = {
   quality: 'auto',
   autoTier: null,
   showFps: true,
+  dayLength: 10,
+  autoAim: true,
   armor: 0,
   storyStep: 0,
   owned: [],

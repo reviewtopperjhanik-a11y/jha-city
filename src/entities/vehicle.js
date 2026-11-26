@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { C } from '../look/palette.js';
 import { clamp, damp, TAU, wrapAngle } from '../util/math.js';
+import { createBlobShadow } from './blobshadow.js';
+import { emitDriftFx, emitImpactFx, updateFx } from './vehiclefx.js';
 
 const geo = {};
 const mats = new Map();
@@ -17,6 +19,40 @@ const glow = (color) => {
   if (!glowMats.has(color)) glowMats.set(color, new THREE.MeshBasicMaterial({ color, toneMapped: false }));
   return glowMats.get(color);
 };
+
+// Visual body variants are derived from paint + spawn heading only. No shared
+// city RNG is touched, so traffic/police spawn positions stay deterministic.
+const BODY_STYLES = ['sedan', 'taxi', 'sports', 'truck'];
+function bodyStyleFor(color, heading) {
+  let h = ((color | 0) ^ Math.round(heading * 64) * 0x9e3779b1) >>> 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x85ebca6b) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  return BODY_STYLES[h % BODY_STYLES.length];
+}
+
+// Headlights share one cached material across all cars. Only its opacity is
+// modulated by the day/night state; the exact lamp colour never changes.
+const headlightMaterial = () => {
+  const m = glow(0xfff1c2);
+  if (!m.transparent) {
+    m.transparent = true;
+    m.opacity = 1;
+  }
+  return m;
+};
+
+let taxiSignMat = null;
+function roofSignMaterial(look) {
+  if (!taxiSignMat) {
+    taxiSignMat = new THREE.MeshBasicMaterial({ color: 0xffd166, toneMapped: false, transparent: true, opacity: 1 });
+  }
+  if (!taxiSignMat.userData.registered && look?.registerNightLight) {
+    look.registerNightLight(taxiSignMat, 0xffd166, 0xffd166, { dayOpacity: 0.34, nightOpacity: 1 });
+    taxiSignMat.userData.registered = true;
+  }
+  return taxiSignMat;
+}
 
 export class Vehicle {
   constructor(scene, look, type, x, z, heading, color = C.flamingo) {
@@ -40,6 +76,8 @@ export class Vehicle {
     this.mesh = this._build();
     this.bodyMaterial = mat(color, this.look);
     this.scene.add(this.mesh);
+    this.shadow = createBlobShadow(this.type === 'bike' ? 1.05 : 1.75);
+    this.scene.add(this.shadow);
     this._sync(0, 0);
   }
 
@@ -50,10 +88,26 @@ export class Vehicle {
     this.wheels = [];
 
     if (this.type === 'car') {
-      const shell = new THREE.Mesh(g('carBody', () => new THREE.BoxGeometry(2.4, 0.9, 4.6)), body);
-      shell.position.y = 0.78;
-      const cabin = new THREE.Mesh(g('carCabin', () => new THREE.BoxGeometry(2.05, 0.78, 2.5)), body);
-      cabin.position.set(0, 1.5, -0.15);
+      this.bodyStyle = bodyStyleFor(this.color, this.heading);
+      const style = this.bodyStyle;
+      const shellGeo = style === 'truck'
+        ? g('truckBody', () => new THREE.BoxGeometry(2.5, 1.0, 5.0))
+        : style === 'sports'
+          ? g('sportsBody', () => new THREE.BoxGeometry(2.32, 0.68, 4.8))
+          : g('carBody', () => new THREE.BoxGeometry(2.4, 0.9, 4.6));
+      const shell = new THREE.Mesh(shellGeo, body);
+      shell.position.y = style === 'truck' ? 0.83 : style === 'sports' ? 0.68 : 0.78;
+
+      const cabinGeo = style === 'truck'
+        ? g('truckCabin', () => new THREE.BoxGeometry(2.2, 0.95, 1.7))
+        : style === 'sports'
+          ? g('sportsCabin', () => new THREE.BoxGeometry(2.02, 0.56, 2.15))
+          : g('carCabin', () => new THREE.BoxGeometry(2.05, 0.78, 2.5));
+      const cabin = new THREE.Mesh(cabinGeo, body);
+      const cabinY = style === 'truck' ? 1.62 : style === 'sports' ? 1.24 : 1.5;
+      const cabinZ = style === 'truck' ? 1.0 : style === 'sports' ? -0.35 : -0.15;
+      cabin.position.set(0, cabinY, cabinZ);
+
       const wheelGeo = g('carWheel', () => new THREE.CylinderGeometry(0.48, 0.48, 0.3, 12));
       for (const x of [-1.18, 1.18]) {
         for (const z of [-1.5, 1.5]) {
@@ -64,24 +118,37 @@ export class Vehicle {
           root.add(w);
         }
       }
-      const glassBand = new THREE.Mesh(g('carGlass', () => new THREE.BoxGeometry(2.09, 0.34, 2.54)), mat(0x17233d, this.look));
-      glassBand.position.set(0, 1.55, -0.15);
-      const roof = new THREE.Mesh(g('carRoof', () => new THREE.BoxGeometry(2.1, 0.1, 2.56)), body);
-      roof.position.set(0, 1.9, -0.15);
+      const glassGeo = style === 'truck'
+        ? g('truckGlass', () => new THREE.BoxGeometry(2.09, 0.4, 1.74))
+        : style === 'sports'
+          ? g('sportsGlass', () => new THREE.BoxGeometry(2.06, 0.24, 2.19))
+          : g('carGlass', () => new THREE.BoxGeometry(2.09, 0.34, 2.54));
+      const glassBand = new THREE.Mesh(glassGeo, mat(0x17233d, this.look));
+      glassBand.position.set(0, cabinY + 0.05, cabinZ);
+      const roofGeo = style === 'truck'
+        ? g('truckRoof', () => new THREE.BoxGeometry(2.16, 0.1, 1.76))
+        : style === 'sports'
+          ? g('sportsRoof', () => new THREE.BoxGeometry(2.06, 0.08, 2.2))
+          : g('carRoof', () => new THREE.BoxGeometry(2.1, 0.1, 2.56));
+      const roof = new THREE.Mesh(roofGeo, body);
+      roof.position.set(0, cabinY + (style === 'sports' ? 0.33 : 0.4), cabinZ);
+
+      const noseZ = style === 'truck' ? 2.56 : style === 'sports' ? 2.45 : 2.33;
+      const tailZ = style === 'truck' ? -2.56 : style === 'sports' ? -2.45 : -2.33;
       const bumperGeo = g('carBumper', () => new THREE.BoxGeometry(2.36, 0.22, 0.2));
       const bumperF = new THREE.Mesh(bumperGeo, dark);
-      bumperF.position.set(0, 0.56, 2.28);
+      bumperF.position.set(0, 0.56, noseZ - 0.05);
       const bumperR = new THREE.Mesh(bumperGeo, dark);
-      bumperR.position.set(0, 0.56, -2.28);
+      bumperR.position.set(0, 0.56, tailZ + 0.05);
       const lampGeo = g('carLamp', () => new THREE.BoxGeometry(0.55, 0.22, 0.12));
       for (const x of [-0.85, 0.85]) {
-        const l = new THREE.Mesh(lampGeo, glow(0xfff1c2));
-        l.position.set(x, 0.85, 2.33);
+        const l = new THREE.Mesh(lampGeo, headlightMaterial());
+        l.position.set(x, 0.85, noseZ);
         root.add(l);
       }
       for (const x of [-0.85, 0.85]) {
         const t = new THREE.Mesh(g('carTail', () => new THREE.BoxGeometry(0.48, 0.18, 0.12)), glow(0xff4a5e));
-        t.position.set(x, 0.86, -2.33);
+        t.position.set(x, 0.86, tailZ);
         root.add(t);
       }
       const mirrorGeo = g('carMirror', () => new THREE.BoxGeometry(0.16, 0.1, 0.24));
@@ -92,7 +159,7 @@ export class Vehicle {
       const trim = mat(0x8ff0e8, this.look);
       for (const x of [-1.26, 1.26]) {
         const m = new THREE.Mesh(mirrorGeo, body);
-        m.position.set(x, 1.44, 0.82);
+        m.position.set(x, cabinY - 0.06, cabinZ + 0.97);
         root.add(m);
         for (const z of [-0.55, 0.65]) {
           const handle = new THREE.Mesh(handleGeo, trim);
@@ -112,13 +179,58 @@ export class Vehicle {
         }
       }
       const grille = new THREE.Mesh(g('carGrille', () => new THREE.BoxGeometry(1.25, 0.16, 0.09)), dark);
-      grille.position.set(0, 0.72, 2.34);
+      grille.position.set(0, 0.72, noseZ + 0.01);
       const plate = new THREE.Mesh(g('carPlate', () => new THREE.BoxGeometry(0.62, 0.16, 0.06)), glow(0xf6e6c8));
-      plate.position.set(0, 0.55, 2.4);
+      plate.position.set(0, 0.55, noseZ + 0.07);
       root.add(grille, plate);
+
+      if (style === 'taxi') {
+        const sign = new THREE.Mesh(g('taxiSign', () => new THREE.BoxGeometry(0.95, 0.25, 0.36)), roofSignMaterial(this.look));
+        sign.position.set(0, cabinY + 0.68, cabinZ);
+        root.add(sign);
+        const checkerGeo = g('taxiChecker', () => new THREE.BoxGeometry(0.055, 0.13, 1.4));
+        const white = mat(0xe8e8f0, this.look);
+        for (const x of [-1.27, 1.27]) {
+          for (let k = 0; k < 2; k++) {
+            const tile = new THREE.Mesh(checkerGeo, k % 2 ? dark : white);
+            tile.position.set(x, 0.95, -0.9 + k * 1.8);
+            root.add(tile);
+          }
+        }
+      } else if (style === 'sports') {
+        const blade = new THREE.Mesh(g('spoilerBlade', () => new THREE.BoxGeometry(2.2, 0.09, 0.36)), dark);
+        blade.position.set(0, 1.32, -2.05);
+        const uprightGeo = g('spoilerUpright', () => new THREE.BoxGeometry(0.09, 0.34, 0.16));
+        root.add(blade);
+        for (const x of [-0.8, 0.8]) {
+          const upright = new THREE.Mesh(uprightGeo, dark);
+          upright.position.set(x, 1.14, -2.05);
+          root.add(upright);
+        }
+        grille.scale.x = 1.25;
+      } else if (style === 'truck') {
+        const bed = new THREE.Mesh(g('truckBed', () => new THREE.BoxGeometry(2.42, 0.5, 2.6)), body);
+        bed.position.set(0, 1.18, -1.4);
+        const gate = new THREE.Mesh(g('truckGate', () => new THREE.BoxGeometry(2.42, 0.42, 0.12)), dark);
+        gate.position.set(0, 1.25, -2.74);
+        root.add(bed, gate);
+        const crateGeo = g('truckCrate', () => new THREE.BoxGeometry(0.8, 0.7, 0.8));
+        const crateMat = mat(0x8a6248, this.look);
+        for (const x of [-0.62, 0.62]) {
+          const crate = new THREE.Mesh(crateGeo, crateMat);
+          crate.position.set(x, 1.78, -1.35);
+          root.add(crate);
+        }
+      } else {
+        const stripe = new THREE.Mesh(g('sedanStripe', () => new THREE.BoxGeometry(0.3, 0.035, 2.2)), trim);
+        stripe.position.set(0, cabinY + 0.45, cabinZ);
+        root.add(stripe);
+        grille.scale.x = 0.82;
+      }
       root.add(shell, cabin, glassBand, roof, bumperF, bumperR);
       shell.castShadow = cabin.castShadow = roof.castShadow = true;
     } else {
+      this.bodyStyle = 'bike';
       // A low, forward-leaning sportbike: spoked wheels, tapered nose fairing,
       // sculpted tank, fork, swingarm, exhaust and a tucked-in rider.
       const rim = mat(0x9aa2c4, this.look);
@@ -308,6 +420,7 @@ export class Vehicle {
       if (impact > 5) {
         const resistance = this.upgrades.armor ? 0.55 : 1;
         this.health = Math.max(0, this.health - impact * 0.055 * resistance);
+        if (this.look?.state?.bloomEnabled) emitImpactFx(this.scene, this.pos.x, 0, this.pos.z);
       }
     } else {
       this.pos.x = nx;
@@ -335,6 +448,24 @@ export class Vehicle {
       : (brake > 0.5 ? 0.05 : -0.02);
     this.mesh.rotation.x = damp(this.mesh.rotation.x, pitch, 7, dt || 0.016);
     for (const w of this.wheels) w.rotation.x = (w.rotation.x + this.speed * (dt || 0.016) * 2.2) % TAU;
+
+    // Headlights are one shared cached material: night = full, day = dimmed.
+    // The taillight material is deliberately left untouched and always visible.
+    const day = this.look?.state?.day;
+    const lampOpacity = day == null ? 1 : clamp(1 - day * 0.72, 0.28, 1);
+    const lamps = headlightMaterial();
+    if (lamps.opacity !== lampOpacity) lamps.opacity = lampOpacity;
+
+    const base = this.type === 'bike' ? 1.05 : 1.75;
+    const stretch = Math.min(0.42, Math.abs(this.speed) * 0.014);
+    this.shadow.position.set(this.pos.x, 0.045, this.pos.z);
+    this.shadow.scale.set(base + stretch * 0.2, 1, base * 0.74 + stretch);
+    this.shadow.visible = this.mesh.visible;
+
+    if (this.look?.state?.bloomEnabled && handbrake && Math.abs(this.speed) > 9 && Math.abs(steer) > 0.25) {
+      emitDriftFx(this.scene, this.pos.x, 0, this.pos.z, this.heading, this.speed);
+    }
+    updateFx(dt, this.scene);
   }
 
   teleport(x, z, heading = this.heading) {
@@ -379,5 +510,6 @@ export class Vehicle {
 
   setVisible(v) {
     this.mesh.visible = v;
+    this.shadow.visible = v;
   }
 }

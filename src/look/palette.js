@@ -16,6 +16,28 @@ export const C = {
   leaf: 0x3d7d5c,
 };
 
+// Procedural sky stops. Morning is pale blue + gold, midday is clear blue,
+// dusk is orange-pink, and night is a deep purple that lets neon read.
+export const SKY = {
+  morningHorizon: 0xffd8a3,
+  morningTop: 0x86bdf0,
+  morningLight: 0xcfe6ff,
+  middayTop: 0x2f6fc4,
+  middaySun: 0xfff3d0,
+  duskRose: 0xff83a8,
+  duskTop: 0x6c3a8f,
+  duskLight: 0xe6b7d8,
+  nightHorizon: 0x232a55,
+  nightTop: 0x11173a,
+  nightDeep: 0x151a3a,
+  nightTopDeep: 0x0b0d24,
+  groundNight: 0x303a5a,
+  hemiNight: 0x7d91d8,
+  hemiDay: 0xbfe3ff,
+  moon: 0xa8bdff,
+  bottomNight: 0x111738,
+};
+
 // Shared by owned cars, traffic and police paint jobs. Everything stays in the
 // sunset/neon family rather than drifting into flat greys.
 export const CAR_COLORS = [

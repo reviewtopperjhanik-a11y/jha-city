@@ -23,10 +23,28 @@ const toon = (color, look) => {
   if (!matCache.has(key)) matCache.set(key, new THREE.MeshToonMaterial({ color, gradientMap: look?.gradientMap }));
   return matCache.get(key);
 };
-const neon = (color) => {
+// Neon is cached per colour, so registration must be per look as well: the
+// WeakSet keeps a repeated landmark build from adding duplicate day/night entries.
+const registeredNeon = new WeakMap();
+const dimHex = (hex) => (((hex >> 17) & 0x7f) << 16) | (((hex >> 9) & 0x7f) << 8) | ((hex >> 1) & 0x7f);
+const neon = (color, look) => {
   const key = `n${color}`;
-  if (!matCache.has(key)) matCache.set(key, new THREE.MeshBasicMaterial({ color, toneMapped: false }));
-  return matCache.get(key);
+  if (!matCache.has(key)) {
+    matCache.set(key, new THREE.MeshBasicMaterial({ color, toneMapped: false, transparent: true }));
+  }
+  const material = matCache.get(key);
+  if (look?.registerNightLight) {
+    let seen = registeredNeon.get(look);
+    if (!seen) {
+      seen = new WeakSet();
+      registeredNeon.set(look, seen);
+    }
+    if (!seen.has(material)) {
+      seen.add(material);
+      look.registerNightLight(material, dimHex(color), color, { dayOpacity: 0.42, nightOpacity: 1 });
+    }
+  }
+  return material;
 };
 
 function builder(group, look) {
@@ -43,7 +61,7 @@ function builder(group, look) {
     x, y, z, rx, ry, rz, shadow,
   );
   const glowBox = (key, w, h, d, color, x, y, z, rx = 0, ry = 0, rz = 0) => add(
-    new THREE.Mesh(g(key, () => new THREE.BoxGeometry(w, h, d)), neon(color)),
+    new THREE.Mesh(g(key, () => new THREE.BoxGeometry(w, h, d)), neon(color, look)),
     x, y, z, rx, ry, rz,
   );
   return { add, box, glowBox };
@@ -54,10 +72,10 @@ function buildSpire(group, look) {
   add(new THREE.Mesh(g('spireBase', () => new THREE.CylinderGeometry(11, 13.5, 3, 6)), toon(C.orchid, look)), 0, 1.5, 0, 0, Math.PI / 6, 0, true);
   add(new THREE.Mesh(g('spireShaft', () => new THREE.CylinderGeometry(4.2, 8, 86, 6)), toon(0x4c3d8f, look)), 0, 46, 0, 0, Math.PI / 6, 0, true);
   for (const y of [18, 38, 58, 76]) {
-    add(new THREE.Mesh(g('spireRing', () => new THREE.TorusGeometry(6.6, 0.38, 6, 18)), neon(y > 60 ? C.coral : C.amber)), 0, y, 0, Math.PI / 2);
+    add(new THREE.Mesh(g('spireRing', () => new THREE.TorusGeometry(6.6, 0.38, 6, 18)), neon(y > 60 ? C.coral : C.amber, look)), 0, y, 0, Math.PI / 2);
   }
-  add(new THREE.Mesh(g('spireCrown', () => new THREE.IcosahedronGeometry(3.4, 0)), neon(C.flamingo)), 0, 93, 0);
-  add(new THREE.Mesh(g('spireMast', () => new THREE.CylinderGeometry(0.18, 0.18, 11, 6)), neon(C.lane)), 0, 100, 0);
+  add(new THREE.Mesh(g('spireCrown', () => new THREE.IcosahedronGeometry(3.4, 0)), neon(C.flamingo, look)), 0, 93, 0);
+  add(new THREE.Mesh(g('spireMast', () => new THREE.CylinderGeometry(0.18, 0.18, 11, 6)), neon(C.lane, look)), 0, 100, 0);
   box('spireDoor', 2.4, 3.4, 0.5, C.ink, 0, 2.2, 11.2);
   glowBox('spireSign', 5.2, 0.45, 0.4, C.teal, 0, 4.6, 11.4);
   return { hw: 14, hd: 14 };
@@ -73,7 +91,7 @@ function buildCrane(group, look) {
   for (let i = 0; i < 9; i++) {
     glowBox('craneStripe', 1.5, 1.9, 3.25, i % 2 ? C.ink : C.lane, -2 + i * 5.5, 44, 0);
   }
-  add(new THREE.Mesh(g('craneCable', () => new THREE.CylinderGeometry(0.1, 0.1, 14, 5)), neon(C.lane)), 42, 36.5, 0);
+  add(new THREE.Mesh(g('craneCable', () => new THREE.CylinderGeometry(0.1, 0.1, 14, 5)), neon(C.lane, look)), 42, 36.5, 0);
   box('craneContainer', 11, 4, 5, C.teal, 42, 26, 0, 0, 0, 0, true);
   glowBox('craneBeacon', 1.2, 1.2, 1.2, 0xff3355, 0, 46.4, 0);
   return { hw: 8, hd: 8 };
@@ -85,8 +103,8 @@ function buildWheel(group, look) {
     box('wheelLeg', 1.6, 25, 1.6, 0x6a4bb0, s * 14, 12.5, 0, 0, 0, s * 0.22, true);
   }
   box('wheelAxle', 2.6, 2.6, 4, C.orchid, 0, 27, 0);
-  add(new THREE.Mesh(g('wheelRim', () => new THREE.TorusGeometry(21, 0.95, 8, 40)), neon(C.coral)), 0, 27, 0);
-  add(new THREE.Mesh(g('wheelRimInner', () => new THREE.TorusGeometry(16.5, 0.34, 6, 36)), neon(C.amber)), 0, 27, 0);
+  add(new THREE.Mesh(g('wheelRim', () => new THREE.TorusGeometry(21, 0.95, 8, 40)), neon(C.coral, look)), 0, 27, 0);
+  add(new THREE.Mesh(g('wheelRimInner', () => new THREE.TorusGeometry(16.5, 0.34, 6, 36)), neon(C.amber, look)), 0, 27, 0);
   for (let i = 0; i < 12; i++) {
     add(new THREE.Mesh(g('wheelSpoke', () => new THREE.BoxGeometry(0.34, 42, 0.34)), toon(0x8a4f9e, look)), 0, 27, 0, 0, 0, (i / 12) * Math.PI);
   }
@@ -104,7 +122,7 @@ function buildArch(group, look) {
     box('archPillar', 3, 23, 3.4, C.orchid, s * 17, 11.5, 0, 0, 0, 0, true);
     glowBox('archTrim', 0.5, 18, 3.6, C.teal, s * 17, 11, 0);
   }
-  add(new THREE.Mesh(g('archTop', () => new THREE.TorusGeometry(17, 1.25, 8, 28, Math.PI)), neon(C.flamingo)), 0, 22.5, 0);
+  add(new THREE.Mesh(g('archTop', () => new THREE.TorusGeometry(17, 1.25, 8, 28, Math.PI)), neon(C.flamingo, look)), 0, 22.5, 0);
   box('archSign', 20, 3.2, 0.9, C.ink, 0, 25.4, 0.9);
   for (let i = -2; i <= 2; i++) {
     glowBox('archLetter', 1.6, 1.4, 0.35, i % 2 ? C.amber : C.lane, i * 3.5, 25.4, 1.5);

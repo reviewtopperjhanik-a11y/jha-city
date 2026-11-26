@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { C } from '../look/palette.js';
 import { DEFAULT_STYLE, normalizeStyle } from '../look/wardrobe.js';
 import { angleLerp, wrapAngle } from '../util/math.js';
+import { createBlobShadow } from './blobshadow.js';
 
 const matCache = new Map();
 const toon = (color, look) => {
@@ -28,6 +29,9 @@ export class Player {
     this.onNotice = () => {};
     this.onDamage = () => {};
     scene.add(this.foot);
+    this.shadow = createBlobShadow(0.62);
+    this.shadow.position.set(x, 0.045, z);
+    scene.add(this.shadow);
   }
 
   applyStyle(style) {
@@ -158,6 +162,7 @@ export class Player {
       this.onGround = true;
     }
     this.foot.visible = !v;
+    this.shadow.visible = !v;
   }
 
   exitVehicle(world) {
@@ -188,6 +193,8 @@ export class Player {
     this.foot.visible = true;
     this.foot.position.copy(this.pos);
     this.foot.rotation.set(0, this.heading, 0);
+    this.shadow.visible = true;
+    this.shadow.position.set(this.pos.x, 0.045, this.pos.z);
     return v;
   }
 
@@ -224,6 +231,8 @@ export class Player {
     this.foot.position.copy(this.pos);
     this.foot.rotation.set(0, this.heading, 0);
     this.foot.visible = true;
+    this.shadow.visible = true;
+    this.shadow.position.set(x, 0.045, z);
   }
 
   update(dt, input, world, cameraYaw, surfaceGrip = 1) {
@@ -252,6 +261,7 @@ export class Player {
       this.pos.copy(v.pos);
       this.heading = v.heading;
       this.foot.visible = false;
+      this.shadow.visible = false;
       return;
     }
 
@@ -316,5 +326,12 @@ export class Player {
     this.foot.rotation.y = this.heading;
     this.foot.rotation.z = moving ? Math.sin(this.walkPhase * 0.5) * 0.015 : 0;
     this.foot.visible = true;
+    // Jump height shrinks the blob; running stretches it slightly along travel.
+    const lift = Math.max(0, this.pos.y);
+    const spread = 0.62 * (1 - Math.min(0.5, lift * 0.12));
+    const run = moving ? Math.min(0.22, this._footSpeed * 0.014) : 0;
+    this.shadow.visible = true;
+    this.shadow.position.set(this.pos.x, 0.045, this.pos.z);
+    this.shadow.scale.set(spread + run * 0.25, 1, spread * 0.74 + run);
   }
 }

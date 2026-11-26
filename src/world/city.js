@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { C, DISTRICTS, districtAt } from '../look/palette.js';
 import { isLandmarkBlock, addLandmarks } from './landmarks.js';
+import { createWaterSurface } from './water.js';
 import { makeRng, rand, randInt, pick } from '../util/rng.js';
 import { clamp, dist2, TAU } from '../util/math.js';
 
@@ -149,6 +150,15 @@ function addMass(chunk, bounds, rng, { x, z, w, d, h, baseY = 0, base, accent, l
     paintSolid(bracket, new THREE.Color(0x3a3a4a), detailRng(x, z, w, h, 3), 0.04);
     chunk.buildings.push(bracket);
   }
+  // Thin neon facade fins use coordinate hashes, never the shared building RNG.
+  if (w > 30 && detailUnit(x, z, w, h, 14) > 0.45) {
+    const fin = new THREE.Color(detailPick(x, z, w, h, 15, [C.teal, C.flamingo, C.amber])).multiplyScalar(1.15);
+    const fins = 2 + Math.floor(detailUnit(x, z, w, h, 16) * 2);
+    for (let k = 0; k < fins; k++) {
+      const ox = detailBetween(x, z, w, h, 17 + k, -w / 2 + 3, w / 2 - 3);
+      chunk.neon.push(windowQuad(x + ox, baseY + h * 0.68, z + d / 2 + 0.08, 0, fin, 0.24, h * 0.3));
+    }
+  }
   if (baseY < 0.5 && w > 18) {
     const door = new THREE.Color(0x0c1320);
     chunk.windows.push(windowQuad(x - w * 0.2, 1.85, z + d / 2 + 0.3, 0, door, 1.7, 2.2));
@@ -255,6 +265,24 @@ function addRoof(chunk, rng, { x, z, w, d, top }, base, accent) {
       chunk.buildings.push(post);
     }
   }
+
+  // Coordinate-hashed roof crown and water tower: skyline variety without
+  // shifting any of the building-generation random numbers.
+  if (detailUnit(x, z, w, top, 18) > 0.52) {
+    const crown = new THREE.Color(detailPick(x, z, w, top, 19, [C.coral, C.teal, C.lane, C.flamingo])).multiplyScalar(1.3);
+    chunk.neon.push(windowQuad(x, top + 1.4, z + d / 2 + 0.55, 0, crown, Math.min(w * 0.6, 9), 0.5));
+    chunk.neon.push(windowQuad(x + w / 2 + 0.55, top + 1.4, z, Math.PI / 2, crown, Math.min(d * 0.6, 9), 0.5));
+  }
+  if (detailUnit(x, z, w, top, 20) > 0.62) {
+    const tank = new THREE.CylinderGeometry(0.85, 1.05, 2.2, 6);
+    tank.translate(
+      x + detailBetween(x, z, w, top, 21, -w / 3, w / 3),
+      top + 1.5,
+      z + detailBetween(x, z, w, top, 22, -d / 3, d / 3),
+    );
+    paintSolid(tank, new THREE.Color(0xb8a48e), detailRng(x, z, w, top, 23), 0.08);
+    chunk.buildings.push(tank);
+  }
 }
 
 function addStorefront(chunk, rng, { x, z, w, d }, accent) {
@@ -274,12 +302,18 @@ function addStorefront(chunk, rng, { x, z, w, d }, accent) {
     chunk.windows.push(windowQuad(f.wx, 1.95, f.wz, f.angle, shopColor, Math.max(3, f.ww), 2.1));
     const signColor = accent.clone().multiplyScalar(1.5);
     chunk.windows.push(windowQuad(f.wx, 3.75, f.wz, f.angle, signColor, Math.max(3, f.ww) * 0.72, 0.72));
+    if (detailUnit(x, z, f.aw, f.ad, 24) > 0.58) {
+      const strip = new THREE.Color(detailPick(x, z, f.aw, f.ad, 25, [C.teal, C.coral, C.amber])).multiplyScalar(1.2);
+      chunk.neon.push(windowQuad(f.wx, 4.15, f.wz, f.angle, strip, Math.min(w * 0.5, 10), 0.28));
+    }
   }
 }
 
 let _treeGeo;
 let _palmGeo;
 let _bushGeo;
+let _benchGeo;
+let _binGeo;
 
 function makeTreeGeometry() {
   const rng = makeRng(3301);
@@ -395,6 +429,90 @@ function makeBushGeometry() {
   const merged = mergeGeometries(parts, false);
   parts.forEach((p) => p.dispose());
   return merged;
+}
+
+function makeBenchGeometry() {
+  const rng = makeRng(8801);
+  const parts = [];
+  const add = (g, color) => {
+    paintSolid(g, new THREE.Color(color), rng, 0.08);
+    parts.push(g);
+  };
+  const seat = new THREE.BoxGeometry(2.2, 0.14, 0.62);
+  seat.translate(0, 0.62, 0);
+  add(seat, 0xa87958);
+  const back = new THREE.BoxGeometry(2.2, 0.58, 0.12);
+  back.translate(0, 0.96, -0.28);
+  add(back, 0x86624c);
+  for (const x of [-0.85, 0.85]) {
+    const leg = new THREE.BoxGeometry(0.14, 0.6, 0.5);
+    leg.translate(x, 0.3, 0);
+    add(leg, 0x3d4058);
+  }
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  return merged;
+}
+
+function makeBinGeometry() {
+  const rng = makeRng(9317);
+  const parts = [];
+  const add = (g, color) => {
+    paintSolid(g, new THREE.Color(color), rng, 0.08);
+    parts.push(g);
+  };
+  const body = new THREE.CylinderGeometry(0.34, 0.28, 0.85, 8);
+  body.translate(0, 0.44, 0);
+  add(body, 0x4b6172);
+  const lid = new THREE.CylinderGeometry(0.38, 0.38, 0.1, 8);
+  lid.translate(0, 0.9, 0);
+  add(lid, 0x2f4150);
+  const ring = new THREE.CylinderGeometry(0.345, 0.345, 0.08, 8);
+  ring.translate(0, 0.72, 0);
+  add(ring, 0x9fb3bd);
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((p) => p.dispose());
+  return merged;
+}
+
+function addStreetPropInstances(chunk, propMat) {
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const pos = new THREE.Vector3();
+  const scl = new THREE.Vector3();
+  const make = (items, geometry, name) => {
+    if (!items.length) return;
+    const inst = new THREE.InstancedMesh(geometry, propMat, items.length);
+    inst.name = name;
+    items.forEach((p, i) => {
+      q.setFromAxisAngle(up, p.rot || 0);
+      pos.set(p.x, 0.05, p.z);
+      scl.setScalar(p.s);
+      m.compose(pos, q, scl);
+      inst.setMatrixAt(i, m);
+    });
+    inst.instanceMatrix.needsUpdate = true;
+    inst.castShadow = true;
+    chunk.group.add(inst);
+  };
+  make(chunk.benches, (_benchGeo ||= makeBenchGeometry()), 'benches');
+  make(chunk.bins, (_binGeo ||= makeBinGeometry()), 'bins');
+}
+
+function paintWetStrip(g, hex, across) {
+  const pos = g.attributes.position;
+  const color = new THREE.Color(hex);
+  const arr = new Float32Array(pos.count * 4);
+  for (let i = 0; i < pos.count; i++) {
+    const d = Math.abs(across === 'x' ? pos.getX(i) : pos.getZ(i));
+    const a = Math.max(0, 1 - d / (GRID.ROAD * 0.44));
+    arr[i * 4] = color.r;
+    arr[i * 4 + 1] = color.g;
+    arr[i * 4 + 2] = color.b;
+    arr[i * 4 + 3] = a * a * 0.85;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(arr, 4));
 }
 
 function addStreetTreeInstances(chunk, vegMat) {
@@ -561,10 +679,9 @@ export function createCity(scene, look) {
   const sideMesh = new THREE.Mesh(mergeOrNull(sideParts), toon(C.sidewalk));
   const curbMesh = new THREE.Mesh(mergeOrNull(curbParts), toon(0x8c849c));
   const lampMesh = new THREE.Mesh(mergeOrNull(lampParts), toon(0x39405e));
-  const lampGlowMesh = new THREE.Mesh(
-    mergeOrNull(lampGlowParts),
-    new THREE.MeshBasicMaterial({ color: 0xffd9a0, toneMapped: false }),
-  );
+  const lampGlowMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, toneMapped: false });
+  look?.registerNightLight?.(lampGlowMat, 0x5b647f, 0xffd9a0, { dayOpacity: 0.24, nightOpacity: 1 });
+  const lampGlowMesh = new THREE.Mesh(mergeOrNull(lampGlowParts), lampGlowMat);
   roadMesh.receiveShadow = true;
   sideMesh.receiveShadow = true;
   curbMesh.receiveShadow = true;
@@ -574,7 +691,10 @@ export function createCity(scene, look) {
     for (let j = 0; j < GRID.N; j++) {
       const key = `${Math.floor(i / 2)},${Math.floor(j / 2)}`;
       if (!chunks.has(key)) {
-        chunks.set(key, { group: new THREE.Group(), buildings: [], windows: [], palms: [], trees: [], bushes: [], cx: 0, cz: 0, n: 0 });
+        chunks.set(key, {
+          group: new THREE.Group(), buildings: [], windows: [], neon: [],
+          palms: [], trees: [], bushes: [], benches: [], bins: [], cx: 0, cz: 0, n: 0,
+        });
       }
       const chunk = chunks.get(key);
       const cx = roadLine(i) + GRID.BLOCK / 2;
@@ -666,11 +786,27 @@ export function createCity(scene, look) {
         const z = cz + rand(rng, -GRID.BLOCK / 2 + 14, GRID.BLOCK / 2 - 14);
         chunk.bushes.push({ x, z, s: rand(rng, 0.7, 1.15), rot: rand(rng, 0, TAU) });
       }
+
+      // Street furniture is placed from coordinate hashes so the plant RNG
+      // stream above stays untouched. One InstancedMesh per prop per chunk.
+      const propEdge = GRID.BLOCK / 2 - GRID.ROAD / 2 - 5.5;
+      const propAt = (side, off) => side < 2
+        ? { x: cx + off, z: cz + (side === 0 ? propEdge : -propEdge), rot: side === 0 ? 0 : Math.PI }
+        : { x: cx + (side === 2 ? propEdge : -propEdge), z: cz + off, rot: side === 2 ? Math.PI / 2 : -Math.PI / 2 };
+      const benchSide = Math.floor(detailUnit(cx, cz, GRID.BLOCK, 0, 41) * 4);
+      const benchOff = detailBetween(cx, cz, GRID.BLOCK, 0, 42, -30, 30);
+      const binSide = (benchSide + 1 + Math.floor(detailUnit(cx, cz, GRID.BLOCK, 1, 43) * 3)) % 4;
+      const binOff = detailBetween(cx, cz, GRID.BLOCK, 1, 44, -30, 30);
+      if (detailUnit(cx, cz, GRID.BLOCK, 0, 45) > 0.12) chunk.benches.push(propAt(benchSide, benchOff));
+      if (detailUnit(cx, cz, GRID.BLOCK, 1, 46) > 0.22) chunk.bins.push(propAt(binSide, binOff));
     }
   }
 
   const buildingMat = toon(0xffffff, { vertexColors: true });
   const windowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+  look?.registerNightLight?.(windowMat, 0x7c88a8, 0xffffff, { dayOpacity: 0.5, nightOpacity: 1 });
+  const neonMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+  look?.registerNightLight?.(neonMat, 0x6a7590, 0xffffff, { dayOpacity: 0.3, nightOpacity: 1 });
   const vegMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: look.gradientMap });
   for (const [key, chunk] of chunks) {
     chunk.cx /= chunk.n;
@@ -684,9 +820,70 @@ export function createCity(scene, look) {
     }
     const wg = mergeOrNull(chunk.windows);
     if (wg) chunk.group.add(new THREE.Mesh(wg, windowMat));
+    const ng = mergeOrNull(chunk.neon);
+    if (ng) {
+      const neonMesh = new THREE.Mesh(ng, neonMat);
+      neonMesh.name = 'neonSigns';
+      chunk.group.add(neonMesh);
+    }
     addStreetTreeInstances(chunk, vegMat);
+    addStreetPropInstances(chunk, vegMat);
     root.add(chunk.group);
   }
+
+  // Beach, sea, dock and a single additive road-wetness gradient. No textures
+  // and no per-frame allocations: setWetness only changes opacity/visibility.
+  const sand = new THREE.Mesh(new THREE.PlaneGeometry(1500, 100), toon(C.sand));
+  sand.name = 'sand';
+  sand.rotation.x = -Math.PI / 2;
+  sand.position.set(0, -0.04, -525);
+  sand.receiveShadow = true;
+  root.add(sand);
+
+  const water = createWaterSurface(look);
+  root.add(water.mesh);
+
+  const dockParts = [];
+  for (let i = 0; i < 16; i++) {
+    const plank = new THREE.BoxGeometry(6.4, 0.1, 1.1);
+    plank.translate(120, 0.08, -475 - i * 5.6);
+    dockParts.push(plank);
+  }
+  for (const z of [-490, -520, -550]) {
+    for (const x of [116, 124]) {
+      const post = new THREE.CylinderGeometry(0.18, 0.18, 1.6, 6);
+      post.translate(x, 0.7, z);
+      dockParts.push(post);
+    }
+  }
+  const dock = new THREE.Mesh(mergeOrNull(dockParts), toon(0x9a7048));
+  dock.name = 'dock';
+  root.add(dock);
+
+  const wetParts = [];
+  const wetPalette = [C.teal, C.flamingo, C.amber, C.coral];
+  for (let i = 0; i <= GRID.N; i++) {
+    const p = roadLine(i);
+    const vertical = new THREE.PlaneGeometry(GRID.ROAD * 0.86, roadLength, 1, 2);
+    vertical.rotateX(-Math.PI / 2);
+    paintWetStrip(vertical, wetPalette[i % wetPalette.length], 'x');
+    vertical.translate(p, 0.075, 0);
+    wetParts.push(vertical);
+    const horizontal = new THREE.PlaneGeometry(GRID.ROAD * 0.86, roadLength, 1, 2);
+    horizontal.rotateX(-Math.PI / 2);
+    horizontal.rotateY(Math.PI / 2);
+    paintWetStrip(horizontal, wetPalette[(i + 1) % wetPalette.length], 'z');
+    horizontal.translate(0, 0.075, p);
+    wetParts.push(horizontal);
+  }
+  const wetMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, vertexColors: true, transparent: true, opacity: 0,
+    depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+  });
+  const wetMesh = new THREE.Mesh(mergeOrNull(wetParts), wetMat);
+  wetMesh.name = 'wetRoads';
+  wetMesh.visible = false;
+  root.add(wetMesh);
 
   root.add(neonSign());
   const landmarks = addLandmarks(root, look, bounds);
@@ -797,5 +994,16 @@ export function createCity(scene, look) {
     }
   }
 
-  return { root, bounds, chunks, landmarks, update, collide, cameraRay, nearestRoad, randomRoadPoint, GRID, roadLine };
+  // Weather calls this as its level ramps. Only two scalar writes here: no
+  // geometry, material or vector allocation happens per frame.
+  function setWetness(level) {
+    const v = clamp(level || 0, 0, 1);
+    wetMat.opacity = v * 0.42;
+    wetMesh.visible = v > 0.02;
+  }
+
+  return {
+    root, bounds, chunks, landmarks, update, collide, cameraRay, nearestRoad, randomRoadPoint,
+    setWetness, water, wetMesh, GRID, roadLine,
+  };
 }

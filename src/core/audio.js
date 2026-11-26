@@ -226,6 +226,30 @@ export class GameAudio {
     o.stop(this.ctx.currentTime + dur + 0.02);
   }
 
+  // Phase 4 combat cues: short synthesised transients built from the same
+  // oscillator/blip path as the rest of the game. No samples, no assets.
+  shot(id = 'pistol') {
+    if (id === 'shotgun') {
+      this.blip(96, 0.19, 'sawtooth', 0.2);
+      this.blip(154, 0.1, 'square', 0.075);
+    } else if (id === 'smg') {
+      this.blip(248, 0.055, 'square', 0.11);
+      this.blip(124, 0.045, 'sawtooth', 0.045);
+    } else {
+      this.blip(186, 0.09, 'square', 0.14);
+      this.blip(318, 0.045, 'triangle', 0.05);
+    }
+  }
+
+  reload() {
+    this.blip(720, 0.035, 'square', 0.05);
+    this.blip(510, 0.045, 'triangle', 0.045);
+  }
+
+  hit() {
+    this.blip(142, 0.06, 'triangle', 0.075);
+  }
+
   update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0, skid = 0 }) {
     if (!this.ctx || !this.enabled) return;
     const now = this.ctx.currentTime;

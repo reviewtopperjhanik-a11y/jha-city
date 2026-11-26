@@ -39,6 +39,24 @@ export class Wanted {
     if (before !== this.stars) this.onChange(this.stars, before);
   }
 
+  // Bribes and pay-n-spray call this directly. It reuses exactly the same
+  // onChange path as crime() and the natural decay in update().
+  reduce(stars = 1) {
+    const before = this.stars;
+    if (before <= 0) return 0;
+    const amount = Math.max(1, Math.floor(stars || 1));
+    this.stars = Math.max(0, before - amount);
+    this.evade = 0;
+    this.evadeNeed = 0;
+    this.searchRadius = this.stars > 0 ? Math.max(48, 52 + this.stars * 15) : 0;
+    this.spotted = false;
+    this.hidden = false;
+    this._senseTimer = 0;
+    if (this.stars === 0) this.lastSeen = null;
+    if (before !== this.stars) this.onChange(this.stars, before);
+    return this.stars;
+  }
+
   // Police.isSpotted() does the line-of-sight work; throttle it so the world
   // collision check does not run for every cruiser on every frame.
   _sense(player, police, dt) {

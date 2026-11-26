@@ -41,16 +41,21 @@ To build an Android platform locally you need the Android SDK + JDK 21; the CI d
 | Radio station | B | RADIO |
 | Photo mode (drag, E snap, K exit) | K | PHOTO |
 | Character look | L | LOOK |
-| Gamepad | sticks / A / B / X / Y / LB / RB / Back / Start | — |
+| Draw / holster weapon | F or Q | GUN / HOLSTER |
+| Fire | F (hold for SMG) | FIRE |
+| Aim assist | Q | AIM |
+| Reload | Z | RELOAD |
+| Switch weapon | X | WEAPON |
+| Gamepad | sticks / A / B / X / Y / LB / RB / Back / Start / L3 / R3 | — |
 | City map (zoom, pan, waypoint) | Tap minimap | Tap minimap |
 | Quality / FPS meter | ⚙ button | ⚙ button |
 | Bribe police ($500) | P | — |
 
 Touch buttons are **situational** — the joystick is always there, but the right-hand buttons
-swap by context: on foot you get JUMP / JOBS / SHOP / WX / LOOK / RADIO / PHOTO / E / HORN;
-driving swaps those for GAS / BRAKE / DRIFT / BOOST; near a glowing mission or business beacon
-you get START / JOBS / SHOP; photo mode leaves just the PHOTO button. Camera drag now follows
-the finger — drag right and the view turns right.
+swap by context: on foot you get JUMP / SPRINT / E; tapping GUN swaps them for AIM / FIRE /
+WEAPON / RELOAD; driving swaps them for GAS / BRAKE / DRIFT / BOOST; near a vehicle E becomes
+ENTER; photo mode leaves just SNAP. Camera drag follows the finger — drag right and the view
+turns right. The ⚙ panel also controls day length (5/10/20/40 minutes) and auto-aim.
 
 Quality starts on **AUTO**; it drops pixel density, bloom and shadows when the frame rate
 sags, and slowly raises them again when there is headroom. Pick HIGH / MEDIUM / LOW in the
@@ -72,7 +77,17 @@ and foot-officer dots. `P` pays a $500 bribe when you have enough cash.
 
 Getting caught shows a **BUSTED** screen, deducts a fine based on your stars and respawns you
 at the downtown precinct. Sirens are distance-based and pan with the nearest cruiser; the
-helicopter adds a low rotor hum.
+helicopter adds a low rotor hum. Officers can now shoot back at higher heat, and at 3+ stars
+rival crews join the chase. The garage sells a **PAY ’N’ SPRAY** ($750) to wipe all heat.
+
+## Weapons and combat
+
+Tap **GUN** (or press F/Q) to draw a weapon. On foot the action buttons become AIM / FIRE /
+WEAPON / RELOAD: the pistol is semi-auto, the shotgun fires a tight spread of pellets and the
+SMG is fully automatic when FIRE is held. AUTO-AIM gives a gentle pull toward the nearest
+visible enemy and can be switched off in Settings. Health and armor absorb damage, med kits
+and armor crates respawn around the city, and low cover reduces incoming fire. Gunfire raises
+wanted stars. All shots, tracers, muzzle flashes and impacts are procedurally drawn and pooled.
 
 ## Jobs, story and economy
 
@@ -101,9 +116,10 @@ flee from wanted chases, scatter from horns and put up umbrellas in the rain.
 
 Four skyline landmarks — **Solar Spire**, **Port Crane**, **Sunset Wheel** and **Neon Arch** —
 occupy their own clear blocks and appear on the map. Weather cycles automatically between clear,
-drizzle and rain; `V` (or the WX button) switches between automatic, clear and rain. Rain thickens
-the fog, adds a synthesized rain bed, reduces grip and acceleration, and makes the minimap show
-the same city as usual.
+drizzle, rain and snow; `V` (or the WX button) switches modes. Rain thickens the fog, adds a
+synthesized rain bed, leaves cheap neon reflections on wet roads, reduces grip and acceleration,
+and paints soft round snow dots when the temperature drops. The sky, fog and window lights follow
+the clock through morning, midday, sunset and night; the ⚙ panel changes the day length.
 
 ## Sound, style and presentation
 

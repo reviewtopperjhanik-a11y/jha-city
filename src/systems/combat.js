@@ -1,0 +1,547 @@
+import * as THREE from 'three';
+import { Weapons } from './weapons.js';
+
+// Phase 4 — hitscan combat, light auto-aim, simple cover and pooled FX.
+// Every hot path writes into objects created in the constructor: no geometry,
+// vectors, arrays or state snapshots are allocated while the game is running.
+
+const EMPTY_CTX = Object.freeze({ time: 0, aimYaw: 0, firing: false, aiming: false, autoAim: true });
+const CRIME_GAP = 1.5;
+const AIM_RANGE = 60;
+const THREAT_CAP = 12;
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const finite = (v, fallback = 0) => (Number.isFinite(v) ? v : fallback);
+
+export class Combat {
+  constructor({ scene, look, world, player, police, traffic, wanted, audio, gangs, toast } = {}) {
+    this.scene = scene;
+    this.look = look;
+    this.world = world;
+    this.player = player;
+    this.police = police;
+    this.traffic = traffic;
+    this.wanted = wanted;
+    this.audio = audio;
+    this.gangs = gangs;
+    this.toast = typeof toast === 'function' ? toast : () => {};
+
+    this.weapons = new Weapons();
+    this.armed = true;
+    this.autoAim = true;
+    this.lowQuality = false;
+    this.kills = 0;
+    this.time = 0;
+    this.lastCrimeTime = -99;
+    this.lastCover = 1;
+    this._triggerHeld = false;
+    this._lastShooterX = 0;
+    this._lastShooterZ = 0;
+    this._hasShooter = false;
+    this._hitTarget = null;
+    this._hitKind = -1;
+    this._hitAlong = 0;
+    this._aimDiff = 0;
+    this._aimDist = 0;
+    this._threatCount = 0;
+
+    // Reused output objects — identity is stable across every frame.
+    this._state = {
+      id: 'pistol', label: 'PISTOL', mag: 0, reserve: 0,
+      reloading: false, reloadLeft: 0, cooldown: 0, armed: true, kills: 0,
+    };
+    this._threatPool = Array.from({ length: THREAT_CAP }, () => ({ x: 0, z: 0 }));
+    // Reused view holding references into the pool; its length follows the
+    // number of live threats without ever creating a new threat object.
+    this._threats = [];
+
+    this._from = new THREE.Vector3();
+    this._to = new THREE.Vector3();
+    this._buildFx(scene);
+    this.state();
+  }
+
+  _buildFx(scene) {
+    const tracerMat = new THREE.LineBasicMaterial({ color: 0xffd9a0, toneMapped: false });
+    const flashMat = new THREE.MeshBasicMaterial({ color: 0xffc46b, toneMapped: false });
+    const impactMat = new THREE.MeshBasicMaterial({ color: 0x9ff0e8, toneMapped: false });
+    const flashGeo = new THREE.ConeGeometry(0.11, 0.46, 5);
+    const impactGeo = new THREE.IcosahedronGeometry(0.14, 0);
+    this._tracers = [];
+    this._flashes = [];
+    this._impacts = [];
+    for (let i = 0; i < 8; i++) {
+      const geo = new THREE.BufferGeometry();
+      const arr = new Float32Array(6);
+      geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const line = new THREE.Line(geo, tracerMat);
+      line.frustumCulled = false;
+      line.visible = false;
+      scene?.add?.(line);
+      this._tracers.push({ line, arr, geo, life: 0 });
+    }
+    for (let i = 0; i < 4; i++) {
+      const mesh = new THREE.Mesh(flashGeo, flashMat);
+      mesh.visible = false;
+      scene?.add?.(mesh);
+      this._flashes.push({ mesh, life: 0 });
+    }
+    for (let i = 0; i < 10; i++) {
+      const mesh = new THREE.Mesh(impactGeo, impactMat);
+      mesh.visible = false;
+      scene?.add?.(mesh);
+      this._impacts.push({ mesh, life: 0 });
+    }
+    this._tracerIndex = 0;
+    this._flashIndex = 0;
+    this._impactIndex = 0;
+  }
+
+  isArmed() {
+    return !!this.armed;
+  }
+
+  setArmed(armed) {
+    this.armed = !!armed;
+    if (!this.armed) this._triggerHeld = false;
+    return this.armed;
+  }
+
+  setAutoAim(on) {
+    this.autoAim = !!on;
+    return this.autoAim;
+  }
+
+  setLowQuality(low) {
+    this.lowQuality = !!low;
+    if (this.lowQuality) {
+      for (let i = 0; i < this._flashes.length; i++) this._flashes[i].mesh.visible = false;
+      for (let i = 0; i < this._impacts.length; i++) this._impacts[i].mesh.visible = false;
+    }
+    this.gangs?.setLowQuality?.(this.lowQuality);
+  }
+
+  reset() {
+    this.weapons.reset();
+    this.kills = 0;
+    this.time = 0;
+    this.lastCrimeTime = -99;
+    this.lastCover = 1;
+    this._triggerHeld = false;
+    this._hasShooter = false;
+    this._hitTarget = null;
+    this._hitKind = -1;
+    for (let i = 0; i < this._tracers.length; i++) {
+      this._tracers[i].life = 0;
+      this._tracers[i].line.visible = false;
+    }
+    for (let i = 0; i < this._flashes.length; i++) {
+      this._flashes[i].life = 0;
+      this._flashes[i].mesh.visible = false;
+    }
+    for (let i = 0; i < this._impacts.length; i++) {
+      this._impacts[i].life = 0;
+      this._impacts[i].mesh.visible = false;
+    }
+    this.state();
+    return this._state;
+  }
+
+  serialize() {
+    return {
+      weapons: this.weapons.serialize(),
+      armed: this.armed,
+      kills: this.kills,
+      autoAim: this.autoAim,
+    };
+  }
+
+  restore(data) {
+    const saved = data && typeof data === 'object' ? data : null;
+    this.weapons.restore(saved?.weapons || saved);
+    this.armed = saved ? saved.armed !== false : true;
+    this.kills = Math.max(0, Math.floor(finite(saved?.kills, 0)));
+    this.autoAim = !saved || saved.autoAim !== false;
+    this.lastCrimeTime = -99;
+    this._triggerHeld = false;
+    this.state();
+    return this._state;
+  }
+
+  update(dt, ctx) {
+    const frame = ctx || EMPTY_CTX;
+    const step = clamp(finite(dt, 0), 0, 0.1);
+    const time = finite(frame.time, this.time);
+    this.time = time;
+    this.weapons.update(step);
+    this._updateFx(step);
+
+    const px = this.player?.pos?.x || 0;
+    const pz = this.player?.pos?.z || 0;
+    const rawYaw = Number.isFinite(frame.aimYaw) ? frame.aimYaw : finite(this.player?.heading, 0);
+    const firing = !!frame.firing;
+    const aiming = !!frame.aiming;
+    // The caller may already have applied resolveAimYaw (main.js does). Never
+    // pull twice; only assist here when a raw camera yaw was supplied.
+    const yaw = Number.isFinite(frame.aimYaw)
+      ? frame.aimYaw
+      : this._resolveYaw(rawYaw, aiming, this.autoAim && frame.autoAim !== false);
+
+    if (firing && this.isArmed() && this.weapons.canFire()) {
+      const auto = !!this.weapons.stats.auto;
+      if (auto || !this._triggerHeld) this.fireOnce(frame, yaw);
+    }
+    this._triggerHeld = firing;
+
+    this._policeFire(step, time, px, pz);
+    this.state();
+    return this._state;
+  }
+
+  fireOnce(ctx, yaw = null) {
+    const frame = ctx || EMPTY_CTX;
+    const time = finite(frame.time, this.time);
+    this.time = time;
+    if (!this.isArmed() || !this.weapons.beginShot()) return false;
+
+    const stats = this.weapons.stats;
+    const px = this.player?.pos?.x || 0;
+    const py = finite(this.player?.pos?.y, 0);
+    const pz = this.player?.pos?.z || 0;
+    const shotYaw = yaw === null
+      ? (Number.isFinite(frame.aimYaw) ? frame.aimYaw : finite(this.player?.heading, 0))
+      : yaw;
+    const fx = Math.sin(shotYaw);
+    const fz = Math.cos(shotYaw);
+    this._reportCrime(1, time, px, pz);
+    this.audio?.shot?.(stats.id);
+    this._spawnShotFx(px, py, pz, fx, fz, stats.range);
+
+    this._hitTarget = null;
+    this._hitKind = -1;
+    this._hitAlong = 0;
+    this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz);
+    this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz);
+    this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz);
+
+    const target = this._hitTarget;
+    if (!target) return true;
+    const damage = stats.damage * stats.pellets;
+    const tx = this._hitKind === 2 ? target.x : finite(target.x, px);
+    const tz = this._hitKind === 2 ? target.z : finite(target.z, pz);
+
+    if (this._hitKind === 0) {
+      const downed = typeof this.police?.damageOfficer === 'function'
+        ? this.police.damageOfficer(target, damage)
+        : this._fallbackDamage(target, damage);
+      if (downed) this.kills++;
+    } else if (this._hitKind === 1) {
+      const downed = typeof this.gangs?.damageActor === 'function'
+        ? this.gangs.damageActor(target, damage)
+        : this._fallbackDamage(target, damage);
+      if (downed) this.kills++;
+    } else {
+      const downed = typeof this.traffic?.knockPed === 'function'
+        ? this.traffic.knockPed(target, damage)
+        : this._fallbackDamage(target, damage);
+      if (target.mesh) target.mesh.userData.knocked = true;
+      // Shooting a civilian is a much bigger crime than firing into the air.
+      this._reportCrime(2, time, px, pz, true);
+      this.toast('CIVILIAN SHOT — WITNESSES CALLING');
+      if (downed) this.kills++;
+    }
+    this.audio?.hit?.();
+    this._spawnImpact(tx, tz);
+    return true;
+  }
+
+  reload() {
+    const started = this.weapons.reload();
+    if (started) this.audio?.reload?.();
+    return started;
+  }
+
+  cycleWeapon() {
+    this.weapons.cycle();
+    this.audio?.blip?.(520, 0.05, 'square', 0.04);
+    return this.state();
+  }
+
+  state() {
+    const weapon = this.weapons.state();
+    const out = this._state;
+    out.id = weapon.id;
+    out.label = weapon.label;
+    out.mag = weapon.mag;
+    out.reserve = weapon.reserve;
+    out.reloading = weapon.reloading;
+    out.reloadLeft = weapon.reloadLeft;
+    out.cooldown = weapon.cooldown;
+    out.armed = this.armed;
+    out.kills = this.kills;
+    return out;
+  }
+
+  threats() {
+    const out = this._threats;
+    out.length = 0;
+    this._threatCount = 0;
+    const px = this.player?.pos?.x || 0;
+    const pz = this.player?.pos?.z || 0;
+    const officers = this.police?.officers;
+    if (officers) {
+      for (let i = 0; i < officers.length; i++) {
+        const o = officers[i];
+        if (!o || Number.isFinite(o.hp) && o.hp <= 0) continue;
+        this._threatPush(o.x, o.z, px, pz);
+      }
+    }
+    const actors = this.gangs?.actors?.();
+    if (actors) {
+      for (let i = 0; i < actors.length; i++) {
+        const a = actors[i];
+        if (!a || Number.isFinite(a.hp) && a.hp <= 0) continue;
+        this._threatPush(a.x, a.z, px, pz);
+      }
+    }
+    return out;
+  }
+
+  coverFactor(source = null) {
+    let factor;
+    if (source && Number.isFinite(source.x) && Number.isFinite(source.z)) {
+      this._lastShooterX = source.x;
+      this._lastShooterZ = source.z;
+      this._hasShooter = true;
+      factor = this._coverFrom(source.x, source.z);
+    } else if (this._hasShooter) {
+      factor = this._coverFrom(this._lastShooterX, this._lastShooterZ);
+    } else {
+      factor = this._probeCover();
+    }
+    this.lastCover = factor;
+    return factor;
+  }
+
+  resolveAimYaw(baseYaw, options) {
+    // No default-options literal here: HUD calls this every frame.
+    return this._resolveYaw(baseYaw, options?.aiming === true, options?.autoAim !== false);
+  }
+
+  _resolveYaw(baseYaw, aiming, autoAim) {
+    const yaw = finite(baseYaw, 0);
+    if (!autoAim || !this.autoAim || !this.player?.pos) return yaw;
+    const px = this.player.pos.x;
+    const pz = this.player.pos.z;
+    this._aimDiff = 0;
+    this._aimDist = 0;
+    this._scanAim(this.police?.officers, yaw, px, pz);
+    this._scanAim(this.gangs?.actors?.(), yaw, px, pz);
+    if (!this._aimDist) return yaw;
+    const pull = Math.min(aiming ? 0.198 : 0.13, 0.045 + (1 - this._aimDist / AIM_RANGE) * 0.15);
+    const delta = clamp(this._aimDiff, -pull, pull);
+    const result = yaw + delta;
+    return Math.atan2(Math.sin(result), Math.cos(result));
+  }
+
+  _scanAim(list, yaw, px, pz) {
+    if (!list) return;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    for (let i = 0; i < list.length; i++) {
+      const target = list[i];
+      if (!target || Number.isFinite(target.hp) && target.hp <= 0) continue;
+      const dx = target.x - px;
+      const dz = target.z - pz;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.1 || d > AIM_RANGE || (this._aimDist && d >= this._aimDist)) continue;
+      const along = dx * fx + dz * fz;
+      if (along <= 0) continue;
+      const angle = Math.atan2(dx, dz);
+      const diff = Math.atan2(Math.sin(angle - yaw), Math.cos(angle - yaw));
+      if (Math.abs(diff) > 0.42) continue;
+      if (this._lineFraction(px, pz, target.x, target.z) < 0.95) continue;
+      this._aimDist = d;
+      this._aimDiff = diff;
+    }
+  }
+
+  _scanTargets(list, kind, yaw, range, spread, px, pz) {
+    if (!list) return;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    for (let i = 0; i < list.length; i++) {
+      const target = list[i];
+      if (!target || Number.isFinite(target.hp) && target.hp <= 0) continue;
+      const dx = target.x - px;
+      const dz = target.z - pz;
+      const along = dx * fx + dz * fz;
+      if (along <= 0.2 || along > range) continue;
+      // Prefer armed enemies over civilians standing closer to the muzzle.
+      const score = kind === 2 ? along + 25 : along;
+      if (this._hitTarget && score >= this._hitAlong) continue;
+      const perp = Math.abs(dx * rx + dz * rz);
+      const width = (kind === 2 ? 0.5 : 0.72) + along * spread;
+      if (perp > width) continue;
+      if (this._lineFraction(px, pz, target.x, target.z) < 0.9) continue;
+      this._hitTarget = target;
+      this._hitKind = kind;
+      this._hitAlong = score;
+    }
+  }
+
+  _fallbackDamage(target, amount) {
+    if (!target) return false;
+    target.hp = finite(target.hp, 1) - amount;
+    return target.hp <= 0;
+  }
+
+  _reportCrime(amount, time, x, z, force = false) {
+    if (typeof this.wanted?.crime !== 'function') return;
+    if (!force && this.lastCrimeTime >= 0 && time - this.lastCrimeTime < CRIME_GAP) return;
+    this.wanted.crime(amount, time, x, z);
+    this.lastCrimeTime = time;
+  }
+
+  _policeFire(dt, time, px, pz) {
+    const officers = this.police?.officers;
+    if (!officers || !this.player?.damage) return;
+    for (let i = 0; i < officers.length; i++) {
+      const officer = officers[i];
+      if (!officer || Number.isFinite(officer.hp) && officer.hp <= 0) continue;
+      // Police owns its own gunfire when it tracks fireCooldown; don't double
+      // damage the player in that case.
+      if (Number.isFinite(officer.fireCooldown)) continue;
+      officer.combatCooldown = finite(officer.combatCooldown, 0) - dt;
+      if (officer.combatCooldown > 0) continue;
+      const dx = px - officer.x;
+      const dz = pz - officer.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 38 || this._lineFraction(officer.x, officer.z, px, pz) < 0.95) continue;
+      this.coverFactor(officer);
+      this.player.damage(Math.max(1, Math.round((8 + (i % 4) * 2) * this.lastCover)));
+      officer.combatCooldown = 1.35 + (i % 3) * 0.35;
+      this._hasShooter = true;
+      this._lastShooterX = officer.x;
+      this._lastShooterZ = officer.z;
+    }
+  }
+
+  _lineFraction(ax, az, bx, bz) {
+    if (typeof this.world?.cameraRay === 'function') {
+      this._from.set(ax, 1.45, az);
+      this._to.set(bx, 1.45, bz);
+      return clamp(this.world.cameraRay(this._from, this._to, 0.18), 0, 1);
+    }
+    if (typeof this.world?.collide === 'function') {
+      const dx = bx - ax;
+      const dz = bz - az;
+      const d = Math.hypot(dx, dz);
+      if (d < 2) return 1;
+      const steps = Math.max(2, Math.min(16, Math.ceil(d / 4)));
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        if (this.world.collide(ax + dx * t, az + dz * t, 0.14)?.hit) return t;
+      }
+    }
+    return 1;
+  }
+
+  _coverFrom(sx, sz) {
+    const px = this.player?.pos?.x || 0;
+    const pz = this.player?.pos?.z || 0;
+    const clear = this._lineFraction(sx, sz, px, pz);
+    let factor = clamp(0.25 + clear * 0.75, 0.25, 1);
+    // A wall right next to the player still helps even if the ray technically
+    // reaches the muzzle.
+    const dx = px - sx;
+    const dz = pz - sz;
+    const d = Math.hypot(dx, dz) || 1;
+    const nearX = px + (dx / d) * 1.4;
+    const nearZ = pz + (dz / d) * 1.4;
+    if (this.world?.collide?.(nearX, nearZ, 0.4)?.hit) factor = Math.min(factor, 0.5);
+    return factor;
+  }
+
+  _probeCover() {
+    if (!this.player?.pos || !this.world) return 1;
+    const px = this.player.pos.x;
+    const pz = this.player.pos.z;
+    const h = finite(this.player.heading, 0);
+    const clear = this._lineFraction(px - Math.sin(h) * 3, pz - Math.cos(h) * 3, px, pz);
+    let factor = clamp(0.25 + clear * 0.75, 0.25, 1);
+    if (this.world?.collide?.(px + Math.sin(h) * 1.3, pz + Math.cos(h) * 1.3, 0.4)?.hit) {
+      factor = Math.min(factor, 0.5);
+    }
+    return factor;
+  }
+
+  _threatPush(x, z, px, pz) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    if (Math.hypot(x - px, z - pz) > 70 || this._threatCount >= THREAT_CAP) return;
+    const slot = this._threatPool[this._threatCount];
+    slot.x = x;
+    slot.z = z;
+    this._threats.push(slot);
+    this._threatCount++;
+  }
+
+  _spawnShotFx(px, py, pz, fx, fz, range) {
+    if (!this.lowQuality) {
+      const flash = this._flashes[this._flashIndex++ % this._flashes.length];
+      flash.mesh.position.set(px + fx * 0.75, py + 1.45, pz + fz * 0.75);
+      flash.mesh.rotation.set(0, Math.atan2(fx, fz), Math.PI / 2);
+      flash.mesh.visible = true;
+      flash.life = 0.07;
+    }
+
+    // LOW keeps a single cheap tracer; HIGH adds a flash and impacts.
+    const tracerCount = this.lowQuality ? 1 : 2;
+    for (let k = 0; k < tracerCount; k++) {
+      const tracer = this._tracers[this._tracerIndex++ % this._tracers.length];
+      const length = Math.min(range, 62);
+      tracer.arr[0] = px + fx * 0.7;
+      tracer.arr[1] = py + 1.45;
+      tracer.arr[2] = pz + fz * 0.7;
+      tracer.arr[3] = px + fx * length;
+      tracer.arr[4] = py + 1.45;
+      tracer.arr[5] = pz + fz * length;
+      tracer.geo.attributes.position.needsUpdate = true;
+      tracer.line.visible = true;
+      tracer.life = 0.085 + k * 0.03;
+    }
+  }
+
+  _spawnImpact(x, z) {
+    if (this.lowQuality) return;
+    const impact = this._impacts[this._impactIndex++ % this._impacts.length];
+    impact.mesh.position.set(x, 1.45, z);
+    impact.mesh.scale.setScalar(1);
+    impact.mesh.visible = true;
+    impact.life = 0.22;
+  }
+
+  _updateFx(dt) {
+    for (let i = 0; i < this._tracers.length; i++) {
+      const fx = this._tracers[i];
+      if (fx.life <= 0) continue;
+      fx.life -= dt;
+      if (fx.life <= 0) fx.line.visible = false;
+    }
+    for (let i = 0; i < this._flashes.length; i++) {
+      const fx = this._flashes[i];
+      if (fx.life <= 0) continue;
+      fx.life -= dt;
+      if (fx.life <= 0) fx.mesh.visible = false;
+    }
+    for (let i = 0; i < this._impacts.length; i++) {
+      const fx = this._impacts[i];
+      if (fx.life <= 0) continue;
+      fx.life -= dt;
+      if (fx.life <= 0) fx.mesh.visible = false;
+      else fx.mesh.scale.setScalar(1 + (0.22 - fx.life) * 3);
+    }
+  }
+}
