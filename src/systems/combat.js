@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Weapons } from './weapons.js';
+import { makeRng } from '../util/rng.js';
 
 // Phase 4 — hitscan combat, light auto-aim, simple cover and pooled FX.
 // Every hot path writes into objects created in the constructor: no geometry,
@@ -8,7 +9,9 @@ import { Weapons } from './weapons.js';
 const EMPTY_CTX = Object.freeze({ time: 0, aimYaw: 0, firing: false, aiming: false, autoAim: true });
 const CRIME_GAP = 1.5;
 const AIM_RANGE = 60;
+const AIM_FALLBACK = 80;
 const THREAT_CAP = 12;
+const NOOP = () => {};
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const finite = (v, fallback = 0) => (Number.isFinite(v) ? v : fallback);
@@ -25,6 +28,9 @@ export class Combat {
     this.audio = audio;
     this.gangs = gangs;
     this.toast = typeof toast === 'function' ? toast : () => {};
+    // Optional bridges owned by main.js. Neither callback allocates here.
+    this.onShot = null;
+    this.onHit = NOOP;
 
     this.weapons = new Weapons();
     this.armed = true;
@@ -44,6 +50,16 @@ export class Combat {
     this._aimDiff = 0;
     this._aimDist = 0;
     this._threatCount = 0;
+    this.fireRng = makeRng(51);
+
+    // Reused descriptors for the camera-ray shot and miss tracers. Their
+    // identity never changes, even when aim is absent (legacy harnesses).
+    this._aimShot = {
+      mx: 0, my: 0, mz: 0,
+      x: 0, y: 0, z: 0,
+      rawX: 0, rawY: 0, rawZ: 0,
+    };
+    this._shotPoint = { x: 0, z: 0 };
 
     // Reused output objects — identity is stable across every frame.
     this._state = {
@@ -205,6 +221,7 @@ export class Combat {
     if (!this.isArmed() || !this.weapons.beginShot()) return false;
 
     const stats = this.weapons.stats;
+    if (typeof this.onShot === 'function') this.onShot(stats.id);
     const px = this.player?.pos?.x || 0;
     const py = finite(this.player?.pos?.y, 0);
     const pz = this.player?.pos?.z || 0;
@@ -213,19 +230,29 @@ export class Combat {
       : yaw;
     const fx = Math.sin(shotYaw);
     const fz = Math.cos(shotYaw);
+    // main.js supplies one pooled camera-ray descriptor. Harnesses that call
+    // fireOnce/update without it keep the original yaw-cone behaviour.
+    const aim = frame.aim && typeof frame.aim === 'object' ? frame.aim : null;
+    if (aim) this._prepareAim(px, py, pz, shotYaw, aim);
     this._reportCrime(1, time, px, pz);
     this.audio?.shot?.(stats.id);
-    this._spawnShotFx(px, py, pz, fx, fz, stats.range);
+    this._spawnShotFx(px, py, pz, fx, fz, stats.range, aim);
 
     this._hitTarget = null;
     this._hitKind = -1;
     this._hitAlong = 0;
-    this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz);
-    this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz);
-    this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz);
+    this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz, aim);
+    this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz, aim);
+    this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz, aim);
 
     const target = this._hitTarget;
-    if (!target) return true;
+    if (!target) {
+      // Geometry under the crosshair still produces a small impact spark.
+      if (aim && aim.hit && !this.lowQuality) {
+        this._spawnImpact(this._aimShot.rawX, this._aimShot.rawZ, this._aimShot.rawY);
+      }
+      return true;
+    }
     const damage = stats.damage * stats.pellets;
     const tx = this._hitKind === 2 ? target.x : finite(target.x, px);
     const tz = this._hitKind === 2 ? target.z : finite(target.z, pz);
@@ -250,8 +277,10 @@ export class Combat {
       this.toast('CIVILIAN SHOT — WITNESSES CALLING');
       if (downed) this.kills++;
     }
+    this.onHit(target);
     this.audio?.hit?.();
-    this._spawnImpact(tx, tz);
+    if (aim) this._spawnImpact(this._aimShot.rawX, this._aimShot.rawZ, this._aimShot.rawY);
+    else this._spawnImpact(tx, tz);
     return true;
   }
 
@@ -366,24 +395,65 @@ export class Combat {
     }
   }
 
-  _scanTargets(list, kind, yaw, range, spread, px, pz) {
+  _scanTargets(list, kind, yaw, range, spread, px, pz, aim = null) {
     if (!list) return;
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
     const rx = Math.cos(yaw);
     const rz = -Math.sin(yaw);
+    const useAim = !!aim;
+    let ox = 0;
+    let oz = 0;
+    let adx = 0;
+    let adz = 0;
+    let wallAlong = Infinity;
+    if (useAim) {
+      // main.js already raycast geometry: aim.hit marks a world hit and aim.x/z
+      // is its endpoint. Targets farther than that endpoint are behind the wall.
+      ox = finite(aim.ox, px);
+      oz = finite(aim.oz, pz);
+      adx = finite(aim.dx, fx);
+      adz = finite(aim.dz, fz);
+      const al = Math.hypot(adx, adz);
+      if (al > 1e-5) {
+        adx /= al;
+        adz /= al;
+      } else {
+        adx = fx;
+        adz = fz;
+      }
+      if (aim.hit && Number.isFinite(aim.x) && Number.isFinite(aim.z)) {
+        wallAlong = Math.hypot(aim.x - ox, aim.z - oz);
+      }
+    }
+    const pxRay = -adz;
+    const pzRay = adx;
     for (let i = 0; i < list.length; i++) {
       const target = list[i];
       if (!target || Number.isFinite(target.hp) && target.hp <= 0) continue;
       const dx = target.x - px;
       const dz = target.z - pz;
-      const along = dx * fx + dz * fz;
-      if (along <= 0.2 || along > range) continue;
+      let along;
+      let perp;
+      let width;
+      if (useAim) {
+        const rayX = target.x - ox;
+        const rayZ = target.z - oz;
+        along = rayX * adx + rayZ * adz;
+        if (along <= 0.2 || along > range || along >= wallAlong) continue;
+        // Much tighter than the old 0.72 + along * spread yaw cone: the camera
+        // crosshair, not the body yaw, decides what the bullet reaches.
+        perp = Math.abs(rayX * pxRay + rayZ * pzRay);
+        width = 0.4 + along * spread * 0.35;
+      } else {
+        along = dx * fx + dz * fz;
+        if (along <= 0.2 || along > range) continue;
+        perp = Math.abs(dx * rx + dz * rz);
+        width = (kind === 2 ? 0.5 : 0.72) + along * spread;
+      }
       // Prefer armed enemies over civilians standing closer to the muzzle.
       const score = kind === 2 ? along + 25 : along;
       if (this._hitTarget && score >= this._hitAlong) continue;
-      const perp = Math.abs(dx * rx + dz * rz);
-      const width = (kind === 2 ? 0.5 : 0.72) + along * spread;
       if (perp > width) continue;
       if (this._lineFraction(px, pz, target.x, target.z) < 0.9) continue;
       this._hitTarget = target;
@@ -408,6 +478,7 @@ export class Combat {
   _policeFire(dt, time, px, pz) {
     const officers = this.police?.officers;
     if (!officers || !this.player?.damage) return;
+    const stars = Math.max(0, Math.floor(finite(this.wanted?.stars, 0)));
     for (let i = 0; i < officers.length; i++) {
       const officer = officers[i];
       if (!officer || Number.isFinite(officer.hp) && officer.hp <= 0) continue;
@@ -421,12 +492,42 @@ export class Combat {
       const d = Math.hypot(dx, dz);
       if (d > 38 || this._lineFraction(officer.x, officer.z, px, pz) < 0.95) continue;
       this.coverFactor(officer);
-      this.player.damage(Math.max(1, Math.round((8 + (i % 4) * 2) * this.lastCover)));
+      // 0.55..0.7 hit chance as stars rise. Stars 0 is the offline harness
+      // path (police.js never shoots then), so it stays deterministic.
+      const chance = stars > 0 ? clamp(0.55 + (Math.min(stars, 5) - 1) * 0.0375, 0.55, 0.7) : 1;
+      const hit = chance >= 1 || this.fireRng() < chance;
+      const dmg = Math.min(7, Math.max(1, Math.round(
+        (5 + Math.min(2, Math.max(0, stars - 2))) * this.lastCover,
+      )));
+      if (hit) {
+        this.player.damage(dmg, officer);
+        this._shotPoint.x = px;
+        this._shotPoint.z = pz;
+      } else {
+        const spread = 2.4 + d * 0.05;
+        this._shotPoint.x = px + (this.fireRng() * 2 - 1) * spread;
+        this._shotPoint.z = pz + (this.fireRng() * 2 - 1) * spread;
+      }
+      this._tracerTo(officer.x, officer.z, this._shotPoint.x, this._shotPoint.z);
       officer.combatCooldown = 1.35 + (i % 3) * 0.35;
       this._hasShooter = true;
       this._lastShooterX = officer.x;
       this._lastShooterZ = officer.z;
     }
+  }
+
+  // Line tracers come from the same eight-slot pool as player shots.
+  _tracerTo(ax, az, bx, bz) {
+    const tracer = this._tracers[this._tracerIndex++ % this._tracers.length];
+    tracer.arr[0] = ax;
+    tracer.arr[1] = 1.35;
+    tracer.arr[2] = az;
+    tracer.arr[3] = bx;
+    tracer.arr[4] = 1.35;
+    tracer.arr[5] = bz;
+    tracer.geo.attributes.position.needsUpdate = true;
+    tracer.line.visible = true;
+    tracer.life = 0.1;
   }
 
   _lineFraction(ax, az, bx, bz) {
@@ -488,10 +589,75 @@ export class Combat {
     this._threatCount++;
   }
 
-  _spawnShotFx(px, py, pz, fx, fz, range) {
+  // Fills the reused aim/muzzle descriptor from main's pooled camera ray.
+  // Consumes aim.x/y/z (ray endpoint), ox/oy/oz (ray origin), dx/dy/dz
+  // (normalised camera forward), hit (geometry flag) and range (far fallback).
+  _prepareAim(px, py, pz, yaw, aim) {
+    const out = this._aimShot;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    // Right-hand muzzle: player.pos + forward * 0.55 + right * 0.3.
+    out.mx = px + fx * 0.55 + rx * 0.3;
+    out.my = py + 1.45;
+    out.mz = pz + fz * 0.55 + rz * 0.3;
+
+    let ex = finite(aim.x, NaN);
+    let ey = finite(aim.y, NaN);
+    let ez = finite(aim.z, NaN);
+    const rawX = ex;
+    const rawY = ey;
+    const rawZ = ez;
+    let dx = finite(aim.dx, 0);
+    let dy = finite(aim.dy, 0);
+    let dz = finite(aim.dz, 0);
+    const dl = Math.hypot(dx, dy, dz);
+    if (dl > 1e-5) {
+      dx /= dl;
+      dy /= dl;
+      dz /= dl;
+    } else {
+      dx = fx;
+      dy = 0;
+      dz = fz;
+    }
+    const valid = Number.isFinite(ex) && Number.isFinite(ey) && Number.isFinite(ez);
+    const near = valid && Math.hypot(ex - px, ez - pz) < 2;
+    if (!valid || near) {
+      const dist = clamp(finite(aim.range, AIM_FALLBACK), 1, AIM_FALLBACK);
+      if (near) {
+        // Crosshair landed almost on the player: extend camera forward.
+        ex = out.mx + dx * dist;
+        ey = out.my + dy * dist;
+        ez = out.mz + dz * dist;
+      } else {
+        // No endpoint at all: project the camera origin along its ray.
+        ex = finite(aim.ox, out.mx) + dx * dist;
+        ey = finite(aim.oy, out.my) + dy * dist;
+        ez = finite(aim.oz, out.mz) + dz * dist;
+      }
+    }
+    out.x = ex;
+    out.y = ey;
+    out.z = ez;
+    out.rawX = Number.isFinite(rawX) ? rawX : ex;
+    out.rawY = Number.isFinite(rawY) ? rawY : ey;
+    out.rawZ = Number.isFinite(rawZ) ? rawZ : ez;
+  }
+
+  _spawnShotFx(px, py, pz, fx, fz, range, aim = null) {
+    const a = this._aimShot;
+    const mx = aim ? a.mx : px + fx * 0.7;
+    const my = aim ? a.my : py + 1.45;
+    const mz = aim ? a.mz : pz + fz * 0.7;
+    const length = Math.min(range, 62);
+    const ex = aim ? a.x : px + fx * length;
+    const ey = aim ? a.y : my;
+    const ez = aim ? a.z : pz + fz * length;
     if (!this.lowQuality) {
       const flash = this._flashes[this._flashIndex++ % this._flashes.length];
-      flash.mesh.position.set(px + fx * 0.75, py + 1.45, pz + fz * 0.75);
+      flash.mesh.position.set(mx, my, mz);
       flash.mesh.rotation.set(0, Math.atan2(fx, fz), Math.PI / 2);
       flash.mesh.visible = true;
       flash.life = 0.07;
@@ -501,23 +667,22 @@ export class Combat {
     const tracerCount = this.lowQuality ? 1 : 2;
     for (let k = 0; k < tracerCount; k++) {
       const tracer = this._tracers[this._tracerIndex++ % this._tracers.length];
-      const length = Math.min(range, 62);
-      tracer.arr[0] = px + fx * 0.7;
-      tracer.arr[1] = py + 1.45;
-      tracer.arr[2] = pz + fz * 0.7;
-      tracer.arr[3] = px + fx * length;
-      tracer.arr[4] = py + 1.45;
-      tracer.arr[5] = pz + fz * length;
+      tracer.arr[0] = mx;
+      tracer.arr[1] = my;
+      tracer.arr[2] = mz;
+      tracer.arr[3] = ex;
+      tracer.arr[4] = ey;
+      tracer.arr[5] = ez;
       tracer.geo.attributes.position.needsUpdate = true;
       tracer.line.visible = true;
-      tracer.life = 0.085 + k * 0.03;
+      tracer.life = 0.1;
     }
   }
 
-  _spawnImpact(x, z) {
+  _spawnImpact(x, z, y = 1.45) {
     if (this.lowQuality) return;
     const impact = this._impacts[this._impactIndex++ % this._impacts.length];
-    impact.mesh.position.set(x, 1.45, z);
+    impact.mesh.position.set(x, y, z);
     impact.mesh.scale.setScalar(1);
     impact.mesh.visible = true;
     impact.life = 0.22;

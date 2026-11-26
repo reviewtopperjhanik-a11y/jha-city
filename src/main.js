@@ -34,20 +34,49 @@ const canvas = document.getElementById('game');
 const ui = document.getElementById('ui');
 const boot = document.getElementById('boot');
 const fatal = document.getElementById('fatal');
+const wasted = document.getElementById('wasted');
+const wastedNote = document.getElementById('wasted-note');
 const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || 'ontouchstart' in window;
+const DEBUG = new URLSearchParams(window.location.search).get('debug') === '1';
+let lastErrorAt = -Infinity;
 
+// The visible crash overlay is a debugging aid only. In normal play a broken
+// subsystem logs at most once per second and the next frame still runs.
+function reportError(label, error) {
+  const now = performance.now();
+  if (now - lastErrorAt < 1000) return;
+  lastErrorAt = now;
+  console.error(`[JHA City] ${label}`, error);
+}
 function showFatal(error) {
+  if (!DEBUG) return;
   const detail = error?.stack || error?.message || String(error || 'Unknown error');
+  if (!fatal) return;
   fatal.textContent = `JHA City hit a problem:\n${detail}`;
   fatal.classList.add('show');
 }
+function guard(label, fn, fallback) {
+  try {
+    return fn();
+  } catch (error) {
+    reportError(label, error);
+    return fallback;
+  }
+}
 window.addEventListener('error', (e) => {
-  if (e.error || e.message) showFatal(e.error || e.message);
+  if (!e.error && !e.message) return;
+  if (DEBUG) showFatal(e.error || e.message);
+  else reportError('window.error', e.error || e.message);
 });
-window.addEventListener('unhandledrejection', (e) => showFatal(e.reason));
+window.addEventListener('unhandledrejection', (e) => {
+  if (DEBUG) showFatal(e.reason);
+  else reportError('unhandledrejection', e.reason);
+});
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
-  showFatal('Graphics context was lost. Restart JHA City.');
+  const message = 'Graphics context was lost. Restart JHA City.';
+  if (DEBUG) showFatal(message);
+  else reportError('webglcontextlost', message);
 });
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -55,7 +84,11 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 2200);
 renderer.setSize(window.innerWidth, window.innerHeight);
 
-const look = createLook(scene, camera, renderer, { bloomEnabled: true, dpr: isMobile ? 1.5 : 2 });
+// Pixel ratio stays inside the 1.25–1.5 budget on every device.
+const look = createLook(scene, camera, renderer, {
+  bloomEnabled: true,
+  dpr: Math.min(1.5, Math.max(1.25, window.devicePixelRatio || 1.25)),
+});
 look.resize(window.innerWidth, window.innerHeight);
 
 const world = createCity(scene, look);
@@ -170,6 +203,10 @@ const combat = new Combat({
 });
 combat.setAutoAim(save.autoAim !== false);
 combat.setArmed(false); // tap GUN (or F/Q on desktop) to draw the weapon
+// One-shot visual feedback. Audio already bridges shot -> haptics, so this
+// callback only supplies camera kick; onHit drives the centred hit marker.
+combat.onShot = () => { recoil = Math.min(1, recoil + 0.22); };
+combat.onHit = () => hud.hitMarker?.();
 qualityListeners.push((low) => {
   traffic.setLowQuality?.(low);
   police.setLowQuality?.(low);
@@ -218,12 +255,27 @@ const camDistances = [8.5, 11, 14];
 let frameCount = 0;
 let booted = false;
 let lookHold = 0;
+let dead = false;
+let deathTimer = 0;
+let deathSpawn = null;
+let deathFee = 0;
+let aimBlend = 0;
+let recoil = 0;
 
 const camDesired = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 const lookNow = new THREE.Vector3();
 const camFrom = new THREE.Vector3();
 const camTarget = new THREE.Vector3();
+const aimCamTarget = new THREE.Vector3();
+const aimLookTarget = new THREE.Vector3();
+const aimDir = new THREE.Vector3();
+const aimFar = new THREE.Vector3();
+const aimEnd = new THREE.Vector3();
+const aimCtx = {
+  ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0,
+  x: 0, y: 0, z: 0, range: 80, hit: false,
+};
 
 // Frame state objects are written in place; the render loop must not churn GC.
 const audioFrame = {
@@ -352,10 +404,12 @@ let dragPointer = null;
 let lastX = 0;
 let lastY = 0;
 let dragMoved = 0;
-function beginLookDrag(e, surface) {
-  if (dragPointer !== null) return;
+let fireDrag = false;
+function beginLookDrag(e, surface, fromFire = false) {
+  if (dead || dragPointer !== null) return;
   e.preventDefault();
   dragging = true;
+  fireDrag = fromFire;
   dragPointer = e.pointerId;
   dragMoved = 0;
   lastX = e.clientX;
@@ -363,22 +417,24 @@ function beginLookDrag(e, surface) {
   surface.setPointerCapture?.(e.pointerId);
 }
 function moveLookDrag(e) {
-  if (!dragging || e.pointerId !== dragPointer) return;
+  if (!dragging || e.pointerId !== dragPointer || dead) return;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
   dragMoved += Math.hypot(dx, dy);
-  if (photo.active) photo.orbit(dx, dy);
+  if (photo.active && !fireDrag) photo.orbit(dx, dy);
   // Drag right looks right: subtracting keeps the world moving left on screen.
-  else cameraYaw -= dx * 0.006;
+  // FIRE-drag uses the same orbit so an armed player can track while firing.
+  else cameraYaw -= dx * (fireDrag ? 0.008 : 0.006);
   lastX = e.clientX;
   lastY = e.clientY;
   lookHold = 1.5;
 }
 function endLookDrag(e) {
   if (!dragging || (e && e.pointerId !== dragPointer)) return;
-  if (photo.active && dragMoved < 8 && photo.requestCapture()) hud.toast('SNAP!');
+  if (photo.active && !fireDrag && dragMoved < 8 && photo.requestCapture()) hud.toast('SNAP!');
   dragging = false;
   dragPointer = null;
+  fireDrag = false;
 }
 for (const surface of [canvas, hud.lookZone]) {
   surface?.addEventListener('pointerdown', (e) => beginLookDrag(e, surface));
@@ -386,6 +442,15 @@ for (const surface of [canvas, hud.lookZone]) {
   surface?.addEventListener('pointerup', endLookDrag);
   surface?.addEventListener('pointercancel', endLookDrag);
 }
+// FIRE is inside BR, outside the look surface. Delegation lets a held FIRE
+// button orbit the over-shoulder camera without stealing the button press.
+hud.right?.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest?.('[data-action="fire"]')) return;
+  beginLookDrag(e, hud.right, true);
+});
+hud.right?.addEventListener('pointermove', moveLookDrag);
+hud.right?.addEventListener('pointerup', endLookDrag);
+hud.right?.addEventListener('pointercancel', endLookDrag);
 canvas.addEventListener('wheel', (e) => {
   if (!photo.active) return;
   e.preventDefault();
@@ -813,9 +878,17 @@ function clearCameraFraction(from, target) {
 // Free camera obeys the same building/vehicle ray as the chase camera.
 photo.raycast = (from, to) => clearCameraFraction(from, to);
 
+function isAiming() {
+  return !dead && !photo.active && !menu.isOpen && !player.vehicle
+    && combat.isArmed() && input.isDown('aim');
+}
+
 function updateCamera(dt, world) {
   lookHold = Math.max(0, lookHold - dt);
-  if (lookHold <= 0) {
+  const aiming = isAiming();
+  aimBlend += ((aiming ? 1 : 0) - aimBlend) * (1 - Math.exp(-11 * dt));
+  recoil = Math.max(0, recoil - dt * 4.5);
+  if (lookHold <= 0 && !aiming) {
     const follow = player.vehicle ? 2.8 : 5.2;
     cameraYaw = wrapAngle(angleLerp(cameraYaw, player.heading, 1 - Math.exp(-follow * dt)));
   }
@@ -833,34 +906,141 @@ function updateCamera(dt, world) {
     player.pos.y + height,
     player.pos.z + dz * dist,
   );
+  if (aimBlend > 0.001) {
+    const fx = Math.sin(cameraYaw);
+    const fz = Math.cos(cameraYaw);
+    const rx = Math.cos(cameraYaw);
+    const rz = -Math.sin(cameraYaw);
+    // Right shoulder, close enough that the muzzle and the crosshair agree.
+    aimCamTarget.set(
+      player.pos.x + rx * 0.85 - fx * 2.4,
+      player.pos.y + 1.75,
+      player.pos.z + rz * 0.85 - fz * 2.4,
+    );
+    camTarget.lerp(aimCamTarget, aimBlend);
+  }
   const fraction = Math.max(2 / dist, clearCameraFraction(camFrom, camTarget));
   camDesired.copy(camFrom).lerp(camTarget, fraction);
   camera.position.lerp(camDesired, 1 - Math.exp(-(player.vehicle ? 7 : 9) * dt));
   const actual = clearCameraFraction(camFrom, camera.position);
   if (actual < 1) camera.position.lerpVectors(camFrom, camera.position, Math.max(0.04, actual));
   lookNow.set(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  if (aimBlend > 0.001) {
+    const fx = Math.sin(cameraYaw);
+    const fz = Math.cos(cameraYaw);
+    const rx = Math.cos(cameraYaw);
+    const rz = -Math.sin(cameraYaw);
+    aimLookTarget.set(
+      player.pos.x + fx * 7 + rx * 0.4,
+      player.pos.y + 1.55 + recoil * 0.35,
+      player.pos.z + fz * 7 + rz * 0.4,
+    );
+    lookNow.lerp(aimLookTarget, aimBlend);
+  } else {
+    lookNow.y += recoil * 0.35;
+  }
   camLook.lerp(lookNow, 1 - Math.exp(-12 * dt));
   camera.lookAt(camLook);
+  const targetFov = 62 - aimBlend * 8;
+  if (Math.abs(camera.fov - targetFov) > 0.02) {
+    camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-9 * dt));
+    camera.updateProjectionMatrix();
+  }
 }
 
-function respawn() {
+// One pooled descriptor feeds every shot. Combat only reads these numbers.
+function updateAimRay() {
+  camera.getWorldDirection(aimDir);
+  aimCtx.ox = camera.position.x;
+  aimCtx.oy = camera.position.y;
+  aimCtx.oz = camera.position.z;
+  aimCtx.dx = aimDir.x;
+  aimCtx.dy = aimDir.y;
+  aimCtx.dz = aimDir.z;
+  aimCtx.range = 80;
+  if (!combat.isArmed()) {
+    // The world ray is only needed while a shot can actually happen.
+    aimEnd.copy(camera.position).addScaledVector(aimDir, 80);
+    aimCtx.x = aimEnd.x;
+    aimCtx.y = aimEnd.y;
+    aimCtx.z = aimEnd.z;
+    aimCtx.hit = false;
+    return aimCtx;
+  }
+  aimFar.copy(camera.position).addScaledVector(aimDir, 80);
+  const fraction = Math.max(0, clearCameraFraction(camera.position, aimFar));
+  aimEnd.copy(camera.position).lerp(aimFar, fraction);
+  aimCtx.x = aimEnd.x;
+  aimCtx.y = aimEnd.y;
+  aimCtx.z = aimEnd.z;
+  aimCtx.hit = fraction < 0.999;
+  return aimCtx;
+}
+
+const HOSPITAL = { x: -195, z: -65, label: 'CITY HOSPITAL' };
+const SAFEHOUSE = { x: 0, z: -195, label: 'SAFEHOUSE' };
+
+function deathDestination() {
+  const hospital = world.nearestRoad(HOSPITAL.x, HOSPITAL.z);
+  const safehouse = world.nearestRoad(SAFEHOUSE.x, SAFEHOUSE.z);
+  const hospitalDist = dist2(player.pos.x, player.pos.z, hospital.x, hospital.z);
+  const safehouseDist = dist2(player.pos.x, player.pos.z, safehouse.x, safehouse.z);
+  const near = hospitalDist <= safehouseDist ? hospital : safehouse;
+  return { x: near.x, z: near.z, label: hospitalDist <= safehouseDist ? HOSPITAL.label : SAFEHOUSE.label };
+}
+
+function beginDeath(source = null) {
+  if (dead || busted) return;
+  dead = true;
+  deathTimer = 3;
+  menu.close();
+  photo.exit();
+  missionOverlay.hide();
+  // A death cancels the run but never rewinds story progress.
+  if (missions.active) guard('missions.fail', () => missions._fail?.('YOU WERE HOSPITALIZED — MISSION FAILED', 'death'));
+  deathFee = Math.min(200, Math.floor(Math.max(0, save.money) * 0.1));
+  save.money = Math.max(0, save.money - deathFee);
+  deathSpawn = deathDestination();
   const v = player.vehicle;
   if (v) {
     player.exitVehicle(world);
-    v.health = 100;
     v.speed = 0;
   }
   wanted.clear(true);
   police.clearAll();
   gangs.clearAll();
   combat.reset();
-  const spawn = world.nearestRoad(0, 65);
-  player.respawnAt(spawn.x, spawn.z, 0);
-  player.armor = Math.floor(player.armor / 2);
-  save.x = spawn.x;
-  save.z = spawn.z;
+  input.setBlocked?.(true);
+  document.body.classList.add('dead');
+  if (wasted) {
+    wastedNote.textContent = `${deathSpawn.label} · FEE $${deathFee}`;
+    wasted.classList.add('show');
+  }
+  audio.blip(146, 0.6, 'sawtooth', 0.13);
+  haptics.impact('HEAVY');
+  save.money = Math.max(0, save.money);
+  saveGame(save, true);
+}
+
+function finishDeath() {
+  dead = false;
+  document.body.classList.remove('dead');
+  if (wasted) wasted.classList.remove('show');
+  player.respawnAt(deathSpawn.x, deathSpawn.z, 0);
+  player.armor = 0;
+  // Two seconds of grace stops an immediate police/gang shot on arrival.
+  player.invulnerable = 2;
+  save.x = deathSpawn.x;
+  save.z = deathSpawn.z;
+  input.setBlocked?.(false);
   snapCamera();
-  hud.toast('WASTED — BACK ON THE STREET');
+  hud.toast(`${deathSpawn.label} — $${deathFee} FEE`);
+  saveGame(save, true);
+  deathSpawn = null;
+}
+
+function respawn() {
+  beginDeath(null);
 }
 
 let busted = false;
@@ -931,15 +1111,32 @@ function threatAngle() {
   // Screen-right is world -x for the chase camera.
   return Math.atan2(-dx * Math.cos(cameraYaw) + dz * Math.sin(cameraYaw), dx * Math.sin(cameraYaw) + dz * Math.cos(cameraYaw));
 }
-player.onDamage = (amount) => {
-  hud.damage(Math.min(1, amount / 18), threatAngle());
+function sourceAngle(source) {
+  if (!source || source.valid === false) return threatAngle();
+  const x = source.x;
+  const z = source.z;
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return threatAngle();
+  const dx = x - player.pos.x;
+  const dz = z - player.pos.z;
+  if (dx * dx + dz * dz < 0.04) return threatAngle();
+  // Screen-right is world -x for the chase camera.
+  return Math.atan2(-dx * Math.cos(cameraYaw) + dz * Math.sin(cameraYaw), dx * Math.sin(cameraYaw) + dz * Math.cos(cameraYaw));
+}
+player.onDamage = (amount, absorbed, source) => {
+  hud.damage(Math.min(1, Math.max(0.25, amount / 18)), sourceAngle(source));
   haptics.hit();
 };
 
 let last = performance.now();
 let lastDraw = last;
-function frame(now) {
-  requestAnimationFrame(frame);
+
+function idleFrameAudio(dt, rawDt) {
+  guard('audio.idle', () => audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level)));
+  guard('hud.tick', () => hud.tick(dt));
+  guard('settings.update', () => settings.update(dt, 1 / rawDt));
+}
+
+function frameStep(now) {
   if (settings.fpsCap && now - lastDraw < 1000 / settings.fpsCap - 1) return;
   lastDraw = now;
   const rawDt = Math.max(0.0001, (now - last) / 1000);
@@ -947,116 +1144,155 @@ function frame(now) {
   last = now;
   gameTime += dt;
   clockHours = (clockHours + dt * (24 / (Math.max(1, save.dayLength || 10) * 60))) % 24;
-  input.poll();
-  const overlayOpen = missionOverlay.isOpen;
-  if ((menu.isOpen || overlayOpen) && photo.active) photo.exit();
+  guard('input.poll', () => input.poll());
+  const overlayOpen = !!missionOverlay.isOpen;
+  if ((menu.isOpen || overlayOpen) && photo.active) guard('photo.exit.overlay', () => photo.exit());
   // One mode drives both the button set and the input context. The joystick
   // stays available in every situation; the bottom-centre zone stays empty.
   const nearVehicle = !player.vehicle && !!traffic.nearestVehicle(player.pos);
   const armed = !player.vehicle && !photo.active && !menu.isOpen && !settings.isOpen && !overlayOpen && combat.isArmed();
-  const hudMode = photo.active ? 'photo'
+  const hudMode = dead ? 'menu' : photo.active ? 'photo'
     : (menu.isOpen || settings.isOpen || overlayOpen) ? 'menu'
       : player.vehicle ? (player.vehicle.type === 'bike' ? 'bike' : 'car')
         : armed ? 'armed'
           : nearVehicle ? 'nearVehicle' : 'foot';
-  input.setContext(hudMode);
-  hud.setMode(hudMode, {
+  guard('input.context', () => input.setContext(hudMode));
+  guard('hud.mode', () => hud.setMode(hudMode, {
     nitro: player.vehicle ? player.vehicle.boost : 0,
     autoSprint: save.autoSprint === true,
-  });
-  lights.update(dt);
-  weather.update(dt, player);
-  look.setTime(currentHours());
+  }));
+  guard('lights.update', () => lights.update(dt));
+  guard('weather.update', () => weather.update(dt, player));
+  guard('look.setTime', () => look.setTime(currentHours()));
+
+  if (dead) {
+    deathTimer -= dt;
+    idleFrameAudio(dt, rawDt);
+    if (deathTimer <= 0) guard('death.finish', finishDeath);
+    guard('render', renderFrame);
+    return;
+  }
 
   if (busted) {
     bustTimer -= dt;
-    audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level));
-    hud.tick(dt);
-    settings.update(dt, 1 / rawDt);
-    if (bustTimer <= 0) finishBusted();
-    renderFrame();
+    idleFrameAudio(dt, rawDt);
+    if (bustTimer <= 0) guard('busted.finish', finishBusted);
+    guard('render', renderFrame);
     return;
   }
 
   if (menu.isOpen || overlayOpen) {
-    audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level));
-    hud.tick(dt);
-    settings.update(dt, 1 / rawDt);
-    renderFrame();
+    idleFrameAudio(dt, rawDt);
+    guard('render', renderFrame);
     return;
   }
 
-  handleActions();
+  guard('actions', handleActions);
   const healthBefore = player.vehicle ? player.vehicle.health : 0;
-  player.update(dt, input, world, cameraYaw, weather.grip);
+  guard('player.update', () => player.update(dt, input, world, cameraYaw, weather.grip,
+    isAiming() ? combat.resolveAimYaw(cameraYaw, { aiming: true, autoAim: save.autoAim !== false }) : null,
+    isAiming()));
 
   if (player.vehicle && player.vehicle.health < healthBefore - 0.4) {
     const impact = (healthBefore - player.vehicle.health) * 0.3;
-    player.damage(impact);
+    guard('player.impact', () => player.damage(impact, null));
     if (impact > 1.5) {
-      audio.blip(110, 0.16, 'sawtooth', 0.06);
-      haptics.collision(Math.min(1, impact / 12));
+      guard('audio.impact', () => audio.blip(110, 0.16, 'sawtooth', 0.06));
+      guard('haptics.impact', () => haptics.collision(Math.min(1, impact / 12)));
     }
   }
-  if (player.hp <= 0) respawn();
+  if (player.hp <= 0) beginDeath(null);
+  if (dead) {
+    idleFrameAudio(dt, rawDt);
+    guard('render', renderFrame);
+    return;
+  }
   if (player.vehicle && player.vehicle.health <= 0) {
     const wreck = player.vehicle;
-    player.exitVehicle(world);
-    if (typeof wreck.explode === 'function') wreck.explode();
-    else {
-      wreck.role = 'wrecked';
-      wreck.health = 0;
-      wreck.speed = 0;
-    }
-    audio.blip(72, 0.7, 'sawtooth', 0.18);
-    haptics.collision(1);
+    guard('vehicle.exit', () => player.exitVehicle(world));
+    guard('vehicle.wreck', () => {
+      if (typeof wreck.explode === 'function') wreck.explode();
+      else {
+        wreck.role = 'wrecked';
+        wreck.health = 0;
+        wreck.speed = 0;
+      }
+    });
+    guard('audio.wreck', () => audio.blip(72, 0.7, 'sawtooth', 0.18));
+    guard('haptics.wreck', () => haptics.collision(1));
     hud.toast('VEHICLE WRECKED');
   }
 
+  guard('world.update', () => world.update(player.pos));
+  const aiming = isAiming();
   if (!photo.active && !menu.isOpen) {
-    const aimYaw = combat.resolveAimYaw(cameraYaw, {
+    guard('camera.update', () => updateCamera(dt, world));
+    guard('aim.ray', updateAimRay);
+    const aimYaw = guard('aim.resolve', () => combat.resolveAimYaw(cameraYaw, {
       aiming: input.isDown('aim'),
       autoAim: save.autoAim !== false,
-    });
-    combat.update(dt, {
+    }), cameraYaw);
+    guard('combat.update', () => combat.update(dt, {
       time: gameTime,
       aimYaw,
-      firing: input.isDown('fire'),
       aiming: input.isDown('aim'),
+      firing: input.isDown('fire'),
       autoAim: save.autoAim !== false,
-    });
-    gangs.update(dt, player, wanted, gameTime);
+      aim: aimCtx,
+    }));
+    guard('gangs.update', () => gangs.update(dt, player, wanted, gameTime));
+  } else if (photo.active) {
+    guard('photo.update', () => photo.update(dt, player));
+  } else {
+    guard('camera.update', () => updateCamera(dt, world));
+  }
+  if (player.hp <= 0) beginDeath(null);
+  if (dead) {
+    idleFrameAudio(dt, rawDt);
+    guard('render', renderFrame);
+    return;
   }
 
-  traffic.update(dt, player, wanted.stars, weather.grip);
-  police.update(dt, player, wanted, gameTime);
-  wanted.update(dt, player, police, gameTime);
-  economy.update(dt, player);
-  missions.update(dt, player);
-  world.update(player.pos);
-  if (photo.active) photo.update(dt, player);
-  else updateCamera(dt, world);
-  hud.tick(dt);
-  settings.update(dt, 1 / rawDt);
+  guard('traffic.update', () => traffic.update(dt, player, wanted.stars, weather.grip));
+  guard('police.update', () => police.update(dt, player, wanted, gameTime));
+  guard('wanted.update', () => wanted.update(dt, player, police, gameTime));
+  guard('economy.update', () => economy.update(dt, player));
+  guard('missions.update', () => missions.update(dt, player));
+  if (player.hp <= 0) beginDeath(null);
+  if (dead) {
+    idleFrameAudio(dt, rawDt);
+    guard('render', renderFrame);
+    return;
+  }
+  guard('hud.tick', () => hud.tick(dt));
+  guard('settings.update', () => settings.update(dt, 1 / rawDt));
 
-  achievements.noteStars(wanted.stars);
+  const axis = guard('input.axis', () => input.axis(), null);
+  const moving = axis ? Math.hypot(axis.x, axis.y) > 0.15 || player.speed > 1 : player.speed > 1;
+  if (typeof hud.reticleActivity === 'function') {
+    guard('hud.reticle', () => hud.reticleActivity(moving, aiming && input.isDown('fire')));
+  } else if (typeof hud.spread === 'function' && (moving || input.isDown('fire'))) {
+    guard('hud.reticle', () => hud.spread(0.35));
+  }
+
+  guard('achievements.stars', () => achievements.noteStars(wanted.stars));
   achievementFrame.hours = currentHours();
   achievementFrame.wanted = wanted.stars;
   achievementFrame.weather = weather.level;
   achievementFrame.missionsDone = save.missionsDone;
   achievementFrame.storyStep = save.storyStep;
   achievementFrame.storyTotal = STORY_COUNT;
-  if (achievements.update(dt, achievementFrame)) saveGame(save, true);
+  if (guard('achievements.update', () => achievements.update(dt, achievementFrame), false)) saveGame(save, true);
 
   const driving = !!player.vehicle;
-  const driveInput = driving ? input.drivingInput() : null;
+  const driveInput = guard('input.driving', () => driving ? input.drivingInput() : null, null);
   const skid = driveInput
     ? (driveInput.handbrake
       ? Math.min(1, player.speed / 16)
       : Math.max(0, Math.abs(driveInput.steer) - 0.6) * Math.min(1, player.speed / 22))
     : 0;
-  const siren = police.audioState(player.pos, cameraYaw);
-  audio.update(dt, setAudioFrame(
+  const siren = guard('police.audio', () => police.audioState(player.pos, cameraYaw), { level: 0, pan: 0, heli: 0 });
+  guard('audio.update', () => audio.update(dt, setAudioFrame(
     player.speed,
     driveInput ? driveInput.throttle : 0,
     wanted.stars,
@@ -1067,49 +1303,61 @@ function frame(now) {
     siren.heli,
     weather.level,
     skid,
-  ));
+  )));
 
-  const missionTarget = missions.currentPoint?.() || null;
+  const missionTarget = guard('missions.point', () => missions.currentPoint?.() || null, null);
   const target = missionTarget || minimap.waypoint;
   if (target) {
-    missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
+    guard('missions.distance', () => missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z)));
     if (!photo.active) {
-      const marker = screenMarker(camera, target, window.innerWidth, window.innerHeight, 82, markerResult);
-      marker.label = (missionTarget ? (missions.active?.config?.name || 'OBJECTIVE') : 'WAYPOINT').slice(0, 18);
-      hud.updateArrow(marker);
+      const marker = guard('marker', () => screenMarker(camera, target, window.innerWidth, window.innerHeight, 82, markerResult), null);
+      if (marker) {
+        marker.label = (missionTarget ? (missions.active?.config?.name || 'OBJECTIVE') : 'WAYPOINT').slice(0, 18);
+        guard('hud.arrow', () => hud.updateArrow(marker));
+      }
     }
   } else {
-    hud.updateArrow(null);
+    guard('hud.arrow', () => hud.updateArrow(null));
   }
   hudFrame.money = save.money;
   hudFrame.wanted = wanted.stars;
   hudFrame.hours = currentHours();
-  hudFrame.mission = missions.status();
+  hudFrame.mission = guard('missions.status', () => missions.status(), '');
   hudFrame.missionActive = !!missions.active;
   hudFrame.hp = player.hp;
   hudFrame.armor = player.armor;
   hudFrame.speed = player.speed;
   hudFrame.mode = player.mode;
-  hudFrame.weapon = combat.state();
-  input.setButtonLabel('weapon', hudFrame.weapon.label);
-  hudFrame.heat = wanted.hudState();
-  hudFrame.weather = weather.label();
-  hudFrame.signal = lights.status(player);
-  hud.update(hudFrame);
+  hudFrame.weapon = guard('combat.state', () => combat.state(), { label: '' });
+  if (hudFrame.weapon?.label) guard('hud.weaponLabel', () => input.setButtonLabel('weapon', hudFrame.weapon.label));
+  hudFrame.heat = guard('wanted.hud', () => wanted.hudState(), null);
+  hudFrame.weather = guard('weather.label', () => weather.label(), '');
+  hudFrame.signal = guard('lights.status', () => lights.status(player), null);
+  guard('hud.update', () => hud.update(hudFrame));
   if (++frameCount % 3 === 0) {
     mapOptions.incidents = traffic.incidents;
-    minimap.update(player, world, missions, police, wanted, economy, mapOptions);
+    guard('minimap.update', () => minimap.update(player, world, missions, police, wanted, economy, mapOptions));
   }
 
-  collectSaveState();
-  saveGame(save);
-
-  renderFrame();
+  guard('save.collect', () => collectSaveState());
+  guard('save.write', () => saveGame(save));
+  guard('render', renderFrame);
 
   if (!booted) {
     booted = true;
     boot?.classList.add('done');
     setTimeout(() => boot?.remove(), 500);
+  }
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  try {
+    frameStep(now);
+  } catch (error) {
+    // Last-resort backstop: a bad frame must never end the render loop.
+    reportError('frame', error);
+    guard('render.recovery', renderFrame);
   }
 }
 requestAnimationFrame(frame);
@@ -1121,3 +1369,25 @@ window.__jha = {
   combat, gangs, haptics, steering, missionOverlay, missionData: MISSION_DATA,
   collectSaveState, flushSave,
 };
+
+// Explicit test hooks. These do not exist in a normal player session.
+if (DEBUG) {
+  window.__dbg = {
+    kill() {
+      player.invulnerable = 0;
+      player.damage(1000, null);
+      if (player.hp <= 0) beginDeath(null);
+      return player.hp;
+    },
+    wanted(stars) {
+      const next = Math.max(0, Math.min(5, Math.round(Number(stars) || 0)));
+      wanted.clear(true);
+      if (next > 0) wanted.crime(next, gameTime, player.pos.x, player.pos.z);
+      return wanted.stars;
+    },
+    hurt(amount) {
+      player.damage(Math.max(0, Number(amount) || 0), null);
+      return player.hp;
+    },
+  };
+}

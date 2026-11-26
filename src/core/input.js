@@ -38,6 +38,8 @@ const KEY_ACTIONS = {
 export class Input {
   constructor(root) {
     this.root = root;
+    // Death/respawn screens freeze gameplay actions while raw events continue.
+    this.blocked = false;
     this.keys = {};
     this.held = {};
     this.pressed = {};
@@ -60,6 +62,51 @@ export class Input {
     }
     this._build(root);
     this._bind();
+  }
+
+  // While blocked, every gameplay-facing read is neutralised. The pooled
+  // axisResult/driveResult objects are never replaced, so callers keep their
+  // references. Raw keyboard/pointer listeners may still run, but press() is
+  // inert, so they cannot queue actions.
+  setBlocked(on) {
+    this.blocked = !!on;
+    if (!this.blocked) return this.blocked;
+    this.keys = {};
+    this.held = {};
+    this.pressed = {};
+    this.padHeld = {};
+    this.padPrev = {};
+    this.padNext = {};
+    this.pad = null;
+    this.stick.x = 0;
+    this.stick.y = 0;
+    this.stick.active = false;
+    this.stick.id = null;
+    if (this.knob) this.knob.style.transform = 'translate(0, 0)';
+    for (const [, action] of PAD_BUTTONS) {
+      this.padPrev[action] = false;
+      this.padNext[action] = false;
+    }
+    if (typeof window !== 'undefined') {
+      for (const timer of this.holdTimers.values()) window.clearTimeout(timer);
+    }
+    this.holdTimers.clear();
+    if (this.buttons) {
+      for (const btn of this.buttons) {
+        btn.classList.remove('down');
+        delete btn.dataset.held;
+      }
+    }
+    const out = this.axisResult;
+    out.x = 0;
+    out.y = 0;
+    const drive = this.driveResult;
+    drive.throttle = 0;
+    drive.brake = 0;
+    drive.steer = 0;
+    drive.handbrake = false;
+    drive.boost = false;
+    return this.blocked;
   }
 
   _build(root) {
@@ -90,6 +137,7 @@ export class Input {
 
   // Programmatic presses share the same edge detection as touch and keyboard.
   press(action) {
+    if (this.blocked) return;
     if (!this.held[action]) this.pressed[action] = true;
     this.held[action] = true;
   }
@@ -129,7 +177,7 @@ export class Input {
       this.knob.style.transform = `translate(${x * 34}px, ${y * 34}px)`;
     };
     this.base.addEventListener('pointerdown', (e) => {
-      if (this.root.dataset.editing === '1') return;
+      if (this.blocked || this.root.dataset.editing === '1') return;
       this.stick.active = true;
       this.stick.id = e.pointerId;
       this.base.setPointerCapture?.(e.pointerId);
@@ -150,7 +198,7 @@ export class Input {
 
     // Delegation means HUD buttons can be replaced or moved freely.
     this.root.addEventListener('pointerdown', (e) => {
-      if (this.root.dataset.editing === '1') return;
+      if (this.blocked || this.root.dataset.editing === '1') return;
       const btn = e.target.closest?.('[data-action]');
       if (!btn || btn.hidden) return;
       e.preventDefault();
@@ -191,6 +239,7 @@ export class Input {
   // Standard gamepad mapping: sticks steer/drive, A jump, B handbrake,
   // X horn, Y radio, LB brake, RB boost, Back look, Start photo.
   poll() {
+    if (this.blocked) return null;
     const nav = typeof window !== 'undefined' ? window.navigator : null;
     const pads = nav?.getGamepads ? nav.getGamepads() : null;
     let pad = null;
@@ -230,6 +279,11 @@ export class Input {
   // Movement axis: x = steering / strafe, y = forward (+1) / back (-1).
   axis() {
     const out = this.axisResult;
+    if (this.blocked) {
+      out.x = 0;
+      out.y = 0;
+      return out;
+    }
     if (this.stick.active) {
       out.x = this.stick.x;
       out.y = -this.stick.y;
@@ -271,19 +325,29 @@ export class Input {
   }
 
   isDown(action) {
+    if (this.blocked) return false;
     if (this.held[action] || this.padHeld[action]) return true;
     return !!this.keys[action];
   }
 
   consume(action) {
+    if (this.blocked) return false;
     const v = !!this.pressed[action];
     this.pressed[action] = false;
     return v;
   }
 
   drivingInput() {
-    const a = this.axis();
     const out = this.driveResult;
+    if (this.blocked) {
+      out.throttle = 0;
+      out.brake = 0;
+      out.steer = 0;
+      out.handbrake = false;
+      out.boost = false;
+      return out;
+    }
+    const a = this.axis();
     out.throttle = Math.max(a.y > 0 ? a.y : 0, this.isDown('gas') ? 1 : 0);
     out.brake = Math.max(a.y < 0 ? -a.y : 0, this.isDown('brake') ? 1 : 0);
     out.steer = a.x;

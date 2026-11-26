@@ -1,10 +1,14 @@
 // JHA City HUD — rewritten from scratch to the master spec.
-// One stylesheet (hud.css), six grid zones, mode-driven action buttons,
+// One stylesheet (hud.css), six grid zones, mode-driven flex rows,
 // Edit HUD with persistence and overlap checks. No per-button positioning.
+// Phase 1.5: TR is one right-aligned row, weather/radio chips are retired
+// (still updateable), BR owns the GUN/HOLSTER toggle, BC owns the speedo,
+// first-launch hint is remembered, and verifyModes() self-checks every mode.
 
 import { normalizeLayout } from '../core/save.js';
 
 const LAYOUT_KEY = 'jha-city-hud-layout-v1';
+const HINT_KEY = 'jha-city-look-hint-v1';
 const MODES = ['foot', 'nearVehicle', 'car', 'bike', 'armed', 'photo', 'menu'];
 const clamp100 = (v) => Math.max(0, Math.min(100, Number(v) || 0));
 const snap = (v) => Math.round(v / 12) * 12;
@@ -19,8 +23,12 @@ const ZONES = [
 ];
 
 // id -> button definition. `action` is what core/input.js listens for.
+// GUN and HOLSTER both use 'armed' so Input.setButtonLabel('armed', label)
+// can retarget whichever toggle is currently on screen.
 const BUTTONS = {
   sprint: { action: 'boost', label: 'SPRINT', cls: 'sprint', hideIf: 'autoSprint' },
+  gun: { action: 'armed', label: 'GUN', cls: 'gun' },
+  holster: { action: 'armed', label: 'HOLSTER', cls: 'holster' },
   e: { action: 'e', label: 'ACTION', cls: 'e' },
   jump: { action: 'jump', label: 'JUMP', cls: 'jump' },
   exit: { action: 'e', label: 'EXIT', cls: 'exit' },
@@ -36,15 +44,15 @@ const BUTTONS = {
   snap: { action: 'snap', label: 'SNAP', cls: 'snap' },
 };
 
-// Rows are filled in flex order inside BR; empty rows are hidden per mode.
+// Three flex rows in BR, top to bottom. Empty rows are collapsed by setMode.
 const MODE_ROWS = {
-  foot: [['sprint', 'e'], ['jump']],
-  nearVehicle: [['e']],
-  car: [['exit', 'hornradio'], ['hb', 'nitro'], ['brake', 'gas']],
-  bike: [['exit', 'hornradio'], ['hb', 'nitro'], ['brake', 'gas']],
-  armed: [['aim', 'fire'], ['weapon', 'reload']],
-  photo: [['snap']],
-  menu: [],
+  foot: [['sprint'], [], ['gun', 'jump']],
+  nearVehicle: [['sprint'], [], ['e', 'jump']],
+  car: [['hornradio', 'exit', 'hb'], ['nitro'], ['brake', 'gas']],
+  bike: [['hornradio', 'exit', 'hb'], ['nitro'], ['brake', 'gas']],
+  armed: [['weapon'], ['reload', 'aim'], ['holster', 'fire']],
+  photo: [[], [], ['snap']],
+  menu: [[], [], []],
 };
 
 const PRESETS = ['right', 'left', 'claw'];
@@ -81,9 +89,16 @@ export class Hud {
     this.damageTimer = 0;
     this.flashTimer = 0;
     this.hintTimer = 8;
+    this.hintKey = HINT_KEY;
     this.overlapAt = 0;
     this.overlapCheckAt = 0;
     this.modeKey = '';
+    this._spread = 0;
+    this.hitTimer = 0;
+    this.edgeTimer = 0;
+    this._verifying = false;
+    this._verifyResult = null;
+    this._verifiedOnBoot = false;
 
     this.el = document.createElement('div');
     this.el.id = 'hud';
@@ -101,26 +116,26 @@ export class Hud {
         <div class="hud-card" id="hud-mission" hidden>No active job</div>
       </div>
       <div class="ui-zone" id="zone-tr" data-zone="TR · CASH + MENU">
-        <button class="hud-card hud-gun" id="hud-gun" data-action="armed" aria-label="Toggle weapon mode">GUN</button>
+        <div class="hud-card" id="hud-money">$0</div>
+        <div class="hud-card" id="hud-stars" hidden>★★★★★</div>
         <button class="hud-card" id="hud-settings" data-action="menu" aria-label="Open city menu">≡</button>
         <button class="hud-card" id="hud-exit-photo" data-action="photoExit" aria-label="Exit photo mode" hidden>✕</button>
-        <div class="hud-card" id="hud-money">$0</div>
-        <div class="hud-card" id="hud-stars">☆☆☆☆☆</div>
-        <div class="hud-card hud-weather" id="hud-weather">☀ CLEAR</div>
+        <button class="hud-card hud-gun" id="hud-gun" data-action="armed" aria-label="Toggle weapon mode" hidden>GUN</button>
+        <div class="hud-card hud-weather" id="hud-weather" hidden>☀ CLEAR</div>
         <div class="hud-card hud-signal" id="hud-signal" hidden>GREEN</div>
-        <div class="hud-card hud-radio" id="hud-radio">♪ OFF</div>
-        <div class="hud-speedo" id="hud-speedo" hidden>
-          <div class="hud-speed-ring" id="hud-speed-ring"></div>
-          <div class="hud-speed-needle" id="hud-speed-needle"></div>
-          <div class="hud-card hud-speed" id="hud-speed">0 <small>KM/H</small></div>
-        </div>
+        <div class="hud-card hud-radio" id="hud-radio" hidden>♪ OFF</div>
       </div>
       <div class="ui-zone" id="zone-bl" data-zone="BL · MOVE"></div>
-      <div class="ui-zone" id="zone-bc" data-zone="BC · EMPTY"></div>
+      <div class="ui-zone" id="zone-bc" data-zone="BC · EMPTY"><div class="hud-speedo" id="hud-speedo" hidden>
+        <div class="hud-speed-ring" id="hud-speed-ring"></div>
+        <div class="hud-speed-needle" id="hud-speed-needle"></div>
+        <div class="hud-card hud-speed" id="hud-speed">0 <small>KM/H</small></div>
+      </div></div>
       <div class="ui-zone" id="zone-br" data-zone="BR · ACTIONS"><div class="touch-right" id="touch-right"></div></div>
       <div class="hud-arrow" id="hud-arrow" hidden><div class="hud-arrow-tip" id="hud-arrow-tip"></div><div class="hud-arrow-label" id="hud-arrow-label">OBJECTIVE</div></div>
-      <div class="hud-reticle" id="hud-reticle" hidden><i></i><i></i><i></i><i></i><b></b></div>
+      <div class="hud-reticle" id="hud-reticle" hidden><i></i><i></i><i></i><i></i><b></b><span class="hit-mark"></span></div>
       <div class="hud-damage" id="hud-damage" hidden></div>
+      <div class="hud-edge" id="hud-edge"></div>
       <div class="hud-photo-flash" id="hud-flash"></div>
       <div class="hud-toast" id="hud-toast"></div>
       <div class="hud-warning" id="hud-warning" hidden>HUD OVERLAP</div>
@@ -188,6 +203,7 @@ export class Hud {
     this.arrowTip = q('#hud-arrow-tip');
     this.arrowLabel = q('#hud-arrow-label');
     this.damageEl = q('#hud-damage');
+    this.edgeEl = q('#hud-edge');
     this.flashEl = q('#hud-flash');
     this.bustedEl = q('#hud-busted');
     this.bustedSub = q('#hud-busted-sub');
@@ -196,7 +212,6 @@ export class Hud {
     this.right = q('#touch-right');
     this.editOverlay = q('#hud-edit');
 
-    this.rows = MODE_ROWS.photo.map(() => null); // rebuilt below from the widest mode
     const maxRows = Math.max(...Object.values(MODE_ROWS).map((rows) => rows.length));
     this.rows = [];
     for (let i = 0; i < maxRows; i++) {
@@ -205,7 +220,19 @@ export class Hud {
       this.right.append(row);
       this.rows.push(row);
     }
+    const slots = this.rows.map((row) => {
+      const trio = [];
+      for (let i = 0; i < 3; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'slot';
+        slot.hidden = true;
+        row.append(slot);
+        trio.push(slot);
+      }
+      return trio;
+    });
     this.buttons = new Map();
+    this.slotOf = new Map();
     for (const [id, def] of Object.entries(BUTTONS)) {
       const btn = document.createElement('button');
       btn.className = `tbtn ${def.cls}`;
@@ -215,20 +242,31 @@ export class Hud {
       btn.textContent = def.label;
       btn.setAttribute('aria-label', def.label);
       btn.hidden = true;
-      this.buttons.set(id, btn);
-    }
-    for (const row of this.rows) {
-      for (let i = 0; i < 3; i++) {
-        const slot = document.createElement('div');
-        slot.className = 'slot';
-        slot.hidden = true;
-        row.append(slot);
+      // Keep every button mounted: Input discovers [data-action] once at boot,
+      // so both the GUN and HOLSTER toggles must already be inside #touch-right.
+      let placement = null;
+      for (const rows of Object.values(MODE_ROWS)) {
+        for (let r = 0; r < rows.length && !placement; r++) {
+          const s = rows[r].indexOf(id);
+          if (s >= 0) placement = [r, s];
+        }
       }
+      if (placement) {
+        slots[placement[0]][placement[1]].append(btn);
+        this.slotOf.set(id, `${placement[0]},${placement[1]}`);
+      }
+      this.buttons.set(id, btn);
     }
 
     this._buildEditor();
     this._applyLayout();
     this.setMode('foot');
+
+    // First-launch hint: 8s once, then remember it forever (key stays in DOM).
+    let hintSeen = false;
+    try { hintSeen = localStorage.getItem(HINT_KEY) === '1'; } catch { /* no storage */ }
+    if (hintSeen) this._markHintSeen();
+    else this.hintTimer = 8;
 
     const coarse = typeof window.matchMedia === 'function'
       ? window.matchMedia('(pointer: coarse)').matches
@@ -237,6 +275,18 @@ export class Hud {
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search || '').get('debug') === '1') {
       document.documentElement.classList.add('debug-ui');
     }
+
+    // Automated JS layout check; one PASS/FAIL line per mode, once per boot.
+    if (!this._verifiedOnBoot) {
+      this._verifiedOnBoot = true;
+      this.verifyModes();
+    }
+  }
+
+  _markHintSeen() {
+    this.hintTimer = 0;
+    this.el.querySelectorAll('.hint').forEach((el) => el.classList.add('fade'));
+    try { localStorage.setItem(HINT_KEY, '1'); } catch { /* no storage */ }
   }
 
   // Minimap is owned by its own system; this only places its DOM in TL.
@@ -246,7 +296,9 @@ export class Hud {
   }
 
   setRadio(label) {
-    if (this.radio) this.radio.textContent = label;
+    if (!this.radio) return;
+    this.radio.textContent = label;
+    this.radio.hidden = true; // chip retired; state still readable by harnesses
   }
 
   setFps(text, { warn = false, bad = false } = {}) {
@@ -282,23 +334,28 @@ export class Hud {
       if (id === 'hb') btn.textContent = mode === 'bike' ? 'WHEELIE' : 'DRIFT';
     }
 
+    const occupied = new Set();
+    for (const id of Object.keys(visible)) {
+      if (visible[id] && this.slotOf.has(id)) occupied.add(this.slotOf.get(id));
+    }
     this.rows.forEach((row, index) => {
       const rowIds = MODE_ROWS[mode][index] || [];
       row.hidden = rowIds.length === 0 || !rowIds.some((id) => visible[id]);
       row.querySelectorAll('.slot').forEach((slot, slotIndex) => {
-        const id = rowIds[slotIndex];
-        const show = !!(id && visible[id]);
-        slot.replaceChildren();
-        slot.hidden = !show;
-        if (show) slot.append(this.buttons.get(id));
+        // Buttons stay mounted (hidden attr when unused); only slots collapse.
+        slot.hidden = !occupied.has(`${index},${slotIndex}`);
       });
     });
 
+    // The legacy TR gun node stays in the DOM for compatibility but hidden;
+    // the live GUN/HOLSTER toggle is a BR button with data-action="armed".
     if (this.gun) this.gun.textContent = mode === 'armed' ? 'HOLSTER' : 'GUN';
     this.el.classList.toggle('photo', mode === 'photo');
     this.el.classList.toggle('photo-mode', mode === 'photo');
     const exit = this.el.querySelector('#hud-exit-photo');
     if (exit) exit.hidden = mode !== 'photo';
+    const settings = this.el.querySelector('#hud-settings');
+    if (settings) settings.hidden = mode === 'photo'; // CSS hides it too; keeps overlap checks honest
     if (mode === 'photo') this.arrow.hidden = true;
   }
 
@@ -310,21 +367,21 @@ export class Hud {
   update(s = {}) {
     this.money.textContent = `$${Math.round(s.money || 0)}`;
     const stars = Math.max(0, Math.min(5, Math.round(s.wanted || 0)));
-    this.stars.textContent = '★'.repeat(stars) + '☆'.repeat(5 - stars);
+    this.stars.textContent = stars > 0 ? '★'.repeat(stars) + '☆'.repeat(5 - stars) : '★★★★★';
+    this.stars.hidden = stars === 0; // zero wanted = no star chip at all
     this.stars.style.color = stars > 0 ? '#f76685' : '';
     const hours = Number(s.hours) || 0;
     const h = Math.floor(hours);
     const m = Math.floor((hours - h) * 60);
     this.clock.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    // Weather and radio are toasted by main.js; their chips stay updated but hidden.
     if (s.weather) this.weather.textContent = s.weather;
-
-    if (!s.signal) {
-      this.signal.hidden = true;
-    } else {
-      this.signal.hidden = false;
+    this.weather.hidden = true;
+    if (s.signal) {
       this.signal.textContent = s.signal.label;
       this.signal.className = `hud-card hud-signal ${s.signal.tone || ''}`;
     }
+    this.signal.hidden = true;
     this.mission.textContent = s.mission || '';
     this.mission.hidden = s.missionActive === false || !s.mission;
     this.healthText.textContent = `HP ${Math.round(s.hp ?? 100)}`;
@@ -351,6 +408,7 @@ export class Hud {
     if (driving) {
       const kmh = Math.max(0, Math.min(220, (s.speed || 0) * 3.6));
       this.speed.innerHTML = `${Math.round(kmh)} <small>KM/H</small>`;
+      // Legacy harnesses still read these; CSS keeps ring/needle invisible.
       this.speedRing.style.setProperty('--speed', `${(kmh / 220) * 100}%`);
       this.speedNeedle.style.transform = `rotate(${-120 + (kmh / 220) * 240}deg)`;
     }
@@ -377,11 +435,40 @@ export class Hud {
     this.arrowLabel.textContent = marker.label || 'OBJECTIVE';
   }
 
+  // ------------------------------------------------------ crosshair feedback
+  // Public: crosshair state from movement / firing, explicit spread, hit mark.
+  reticleActivity(moving = false, firing = false) {
+    this.reticle.classList.toggle('moving', !!moving);
+    this.reticle.classList.toggle('firing', !!firing);
+    this.spread((moving ? 0.35 : 0) + (firing ? 0.65 : 0));
+  }
+
+  spread(amount = 0) {
+    const value = Math.max(0, Math.min(1, Number(amount) || 0));
+    this._spread = value;
+    this.reticle.style.setProperty('--reticle-spread', `${(value * 8).toFixed(1)}px`);
+    this.reticle.dataset.spread = String(value);
+    return value;
+  }
+
+  hitMarker() {
+    this.reticle.classList.add('hit');
+    this.hitTimer = 0.18;
+  }
+
+  // ---------------------------------------------------------------- damage UI
+  edgeFlash() {
+    if (!this.edgeEl) return;
+    this.edgeEl.classList.add('show');
+    this.edgeTimer = 0.22;
+  }
+
   damage(strength = 1, angle = 0) {
     this.damageEl.hidden = false;
     this.damageEl.style.setProperty('--dmg-angle', `${Math.round(angle * 180 / Math.PI)}deg`);
     this.damageEl.style.opacity = String(Math.max(0.25, Math.min(1, strength)));
     this.damageTimer = 0.85;
+    this.edgeFlash();
   }
 
   photoFlash(ok = true) {
@@ -401,10 +488,11 @@ export class Hud {
     this.bustedEl.setAttribute('aria-hidden', 'true');
   }
 
-  toast(msg) {
+  toast(msg, seconds = 2) {
     this.toastEl.textContent = msg;
     this.toastEl.classList.add('show');
-    this.toastTimer = 2.6;
+    const n = Number(seconds);
+    this.toastTimer = Number.isFinite(n) ? Math.max(0.05, n) : 2;
   }
 
   tick(dt) {
@@ -417,13 +505,22 @@ export class Hud {
       if (this.damageTimer <= 0) this.damageEl.hidden = true;
       else this.damageEl.style.opacity = String(Math.max(0, Math.min(1, this.damageTimer / 0.85)));
     }
+    if (this.edgeTimer > 0) {
+      this.edgeTimer -= dt;
+      if (this.edgeTimer <= 0) this.edgeEl.classList.remove('show');
+    }
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
       if (this.flashTimer <= 0) this.flashEl.classList.remove('show', 'ok', 'fail');
     }
+    if (this.hitTimer > 0) {
+      this.hitTimer -= dt;
+      if (this.hitTimer <= 0) this.reticle.classList.remove('hit');
+    }
+    if (this._spread > 0) this.spread(this._spread - dt * 1.8);
     if (this.hintTimer > 0) {
       this.hintTimer -= dt;
-      if (this.hintTimer <= 0) this.el.querySelectorAll('.hint').forEach((el) => el.classList.add('fade'));
+      if (this.hintTimer <= 0) this._markHintSeen();
     }
     const now = performance.now();
     if ((this.editing || document.documentElement.classList.contains('debug-ui'))
@@ -434,13 +531,27 @@ export class Hud {
   }
 
   // Any two visible clickable HUD elements sharing pixels is a layout bug.
+  // jsdom (and stubbed harnesses) may report no rects at all — never throw.
   checkOverlaps() {
     const nodes = [...this.el.querySelectorAll('.tbtn:not([hidden]), #hud-settings:not([hidden]), #hud-exit-photo:not([hidden])')]
-      .filter((el) => el.getClientRects().length > 0);
-    const rects = nodes.map((el) => el.getBoundingClientRect());
+      .filter((el) => {
+        try { return typeof el.getClientRects === 'function' && el.getClientRects().length > 0; }
+        catch { return false; }
+      });
+    const rects = nodes.map((el) => {
+      try { return typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null; }
+      catch { return null; }
+    });
+    const positive = (r) => {
+      if (!r || !Number.isFinite(r.left) || !Number.isFinite(r.right)
+        || !Number.isFinite(r.top) || !Number.isFinite(r.bottom)) return false;
+      return r.right - r.left > 0 && r.bottom - r.top > 0;
+    };
     let count = 0;
     for (let i = 0; i < rects.length; i++) {
+      if (!positive(rects[i])) continue;
       for (let j = i + 1; j < rects.length; j++) {
+        if (!positive(rects[j])) continue;
         const a = rects[i];
         const b = rects[j];
         const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
@@ -465,6 +576,51 @@ export class Hud {
       console.warn(`[JHA HUD] ${count} overlapping clickable element pair(s)`);
     }
     return true;
+  }
+
+  // ------------------------------------------------------------- JS verify
+  // One console PASS/FAIL line per mode. Restores the caller's exact state.
+  verifyModes() {
+    if (this._verifying) return this._verifyResult === true;
+    this._verifying = true;
+    const saved = {
+      mode: this.mode,
+      previousMode: this.previousMode,
+      nitro: this.nitro,
+      autoSprint: this.autoSprint,
+      modeKey: this.modeKey,
+    };
+    let allPass = true;
+    for (const mode of MODES) {
+      const nitro = mode === 'car' || mode === 'bike' ? 100 : 0;
+      this.setMode(mode, { nitro, autoSprint: false });
+      const overlap = this.checkOverlaps();
+      const ids = [...this.buttons.values()].filter((b) => !b.hidden).map((b) => b.dataset.id);
+      const allowed = new Set(MODE_ROWS[mode].flat());
+      const unexpected = ids.filter((id) => !allowed.has(id));
+      const duplicate = ids.length !== new Set(ids).size;
+      const required = mode === 'car' || mode === 'bike' ? ['nitro', 'gas', 'brake', 'hb']
+        : mode === 'armed' ? ['holster', 'fire', 'aim', 'reload', 'weapon']
+          : mode === 'foot' ? ['sprint', 'gun', 'jump']
+            : mode === 'nearVehicle' ? ['sprint', 'e', 'jump']
+              : mode === 'photo' ? ['snap'] : [];
+      const missing = required.filter((id) => !ids.includes(id));
+      const ok = !overlap && !duplicate && unexpected.length === 0 && missing.length === 0;
+      if (ok) {
+        console.info(`[JHA HUD] PASS ${mode} — ${ids.length} button(s): ${ids.join(', ') || 'none'}`);
+      } else {
+        allPass = false;
+        console.error(`[JHA HUD] FAIL ${mode} — overlap=${overlap} duplicate=${duplicate}`
+          + ` unexpected=[${unexpected.join(',')}] missing=[${missing.join(',')}]`);
+      }
+    }
+    this.modeKey = ''; // force a full DOM refresh back to the caller's mode
+    this.setMode(saved.mode, { nitro: saved.nitro, autoSprint: saved.autoSprint });
+    this.modeKey = saved.modeKey;
+    this.previousMode = saved.previousMode;
+    this._verifying = false;
+    this._verifyResult = allPass;
+    return allPass;
   }
 
   // -------------------------------------------------------------- Edit HUD

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { makeRng } from '../util/rng.js';
 
 // Phase 4 — original neon street crews. Their silhouette (angular jacket,
 // visor bar, spiked hair) is deliberately different from the navy/hi-vis
@@ -68,6 +69,8 @@ export class Gangs {
     this.look = look;
     this.world = world;
     this.toast = typeof toast === 'function' ? toast : () => {};
+    // Dedicated accuracy stream: one roll per shot, no per-frame allocation.
+    this.fireRng = makeRng(51);
     this.lowQuality = false;
     this.cap = MAX_ACTORS;
     this.wave = 0;
@@ -201,10 +204,12 @@ export class Gangs {
       actor.mesh.rotation.z = Math.sin(actor.stride) * 0.035;
 
       if (d < 40 && actor.cooldown <= 0 && this._lineClear(actor.x, actor.z, px, pz)) {
-        // A readable 8..14 damage band, with a slow cadence so a wave is
-        // survivable while still making HP fall when the player stands still.
-        const damage = 8 + (actor.slot & 3);
-        player.damage?.(damage);
+        // A wave still flashes on every shot, but only ~55% of shots land.
+        // Damage stays <= 6 so two hits cannot drop a healthy player.
+        if (this.fireRng() < 0.55) {
+          const damage = Math.min(6, 4 + (actor.slot % 3));
+          player.damage?.(damage, actor);
+        }
         actor.cooldown = 1.05 + (actor.slot % 4) * 0.24;
         this._flash(actor);
       }

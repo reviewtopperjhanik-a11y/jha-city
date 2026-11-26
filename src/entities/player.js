@@ -20,6 +20,9 @@ export class Player {
     this.onGround = true;
     this.hp = 100;
     this.armor = Math.max(0, Math.min(100, armor || 0));
+    this.invulnerable = 0;
+    // Reused by onDamage so a hit never allocates an object per frame.
+    this._damageSource = { x: 0, z: 0, valid: false, dx: 0, dz: 0, distance: 0 };
     this.vehicle = null;
     // One reused state object drives the short crouch/hop enter/exit pose.
     // No vectors or arrays are allocated while the transition runs.
@@ -285,15 +288,56 @@ export class Player {
     return v;
   }
 
-  damage(amount) {
+  damage(amount, source = null) {
+    if (this.invulnerable > 0) return 0;
     const raw = Math.max(0, amount || 0);
     if (raw <= 0) return 0;
     const absorbed = Math.min(this.armor, raw);
     this.armor -= absorbed;
     const toHealth = raw - absorbed;
     this.hp = Math.max(0, this.hp - toHealth);
-    this.onDamage(toHealth || raw * 0.15, absorbed > 0);
+    this.onDamage(toHealth || raw * 0.15, absorbed > 0, this._readDamageSource(source));
     return toHealth;
+  }
+
+  // Every caller describes "who hit me" differently. Fold all of the shapes
+  // into one reused object; never dereference a source before checking it.
+  _readDamageSource(source) {
+    const info = this._damageSource;
+    info.x = 0;
+    info.z = 0;
+    info.valid = false;
+    info.dx = 0;
+    info.dz = 0;
+    info.distance = 0;
+    if (!source || (typeof source !== 'object' && typeof source !== 'function')) return info;
+    let x;
+    let z;
+    // Plain {x,z}: actors and THREE.Vector3 both land here.
+    if (typeof source.x === 'number' && typeof source.z === 'number') {
+      x = source.x;
+      z = source.z;
+    } else {
+      // Vehicles expose .pos; Object3D-ish actors expose .position.
+      const pos = source.pos || source.position;
+      if (pos && typeof pos === 'object') {
+        x = pos.x;
+        z = pos.z;
+      }
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return info;
+    info.x = x;
+    info.z = z;
+    info.valid = true;
+    const dx = this.pos.x - x;
+    const dz = this.pos.z - z;
+    const distance = Math.hypot(dx, dz);
+    info.distance = distance;
+    if (distance > 1e-6) {
+      info.dx = dx / distance;
+      info.dz = dz / distance;
+    }
+    return info;
   }
 
   heal(amount = 35) {
@@ -323,7 +367,10 @@ export class Player {
     this._startTransition('idle');
   }
 
-  update(dt, input, world, cameraYaw, surfaceGrip = 1) {
+  update(dt, input, world, cameraYaw, surfaceGrip = 1, aimYaw = null, aiming = false) {
+    // Respawn protection (set by the game layer) ticks in both foot and car modes.
+    if (this.invulnerable > 0) this.invulnerable = Math.max(0, this.invulnerable - dt);
+    const aimingNow = !!aiming && Number.isFinite(aimYaw) && !this.vehicle;
     if (this.vehicle) {
       const v = this.vehicle;
       const drive = input.drivingInput();
@@ -384,7 +431,14 @@ export class Player {
           this.onNotice('BACK ON THE STREET');
         }
       }
-      this.heading = wrapAngle(angleLerp(this.heading, Math.atan2(mx, mz), 1 - Math.exp(-12 * dt)));
+      if (!aimingNow) {
+        this.heading = wrapAngle(angleLerp(this.heading, Math.atan2(mx, mz), 1 - Math.exp(-12 * dt)));
+      }
+    }
+    if (aimingNow) {
+      // Full-body aim owns the heading; the movement vector above is still
+      // camera-relative, so strafing does not depend on where we look.
+      this.heading = wrapAngle(angleLerp(this.heading, aimYaw, 1 - Math.exp(-24 * dt)));
     }
     if ((input.consume('jump') || input.consume('hb')) && this.onGround) {
       this.vy = 9.5;
@@ -414,6 +468,13 @@ export class Player {
     if (moving && this.onGround) this.foot.position.y += Math.abs(Math.sin(this.walkPhase)) * 0.035;
     this.foot.rotation.y = this.heading;
     this.foot.rotation.z = moving ? Math.sin(this.walkPhase * 0.5) * 0.015 : 0;
+    if (aimingNow) {
+      // Arms up in a simple two-handed aim pose; no extra geometry or assets.
+      this.arms[0].rotation.x = -1.15;
+      this.arms[1].rotation.x = -1.15;
+      this.elbows[0].rotation.x = -0.2;
+      this.elbows[1].rotation.x = -0.2;
+    }
     this.foot.visible = true;
     // Jump height shrinks the blob; running stretches it slightly along travel.
     const lift = Math.max(0, this.pos.y);

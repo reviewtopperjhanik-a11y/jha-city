@@ -129,6 +129,10 @@ export class Police {
     this.onBusted = callbacks.onBusted || (() => {});
     this.onToast = callbacks.toast || (() => {});
     this.rng = makeRng(90210);
+    // Separate stream for gunfire accuracy; one small reused point describes
+    // every miss, so no Vector3 is created when an officer shoots.
+    this.fireRng = makeRng(51);
+    this._shotPoint = { x: 0, z: 0 };
 
     this.units = [];
     this.cars = [];
@@ -512,11 +516,12 @@ export class Police {
   }
 
   // One of eight preallocated line meshes; no THREE object is created on fire.
-  _tracer(o, player) {
+  // `target` is player.pos on a hit or the shared _shotPoint on a miss.
+  _tracer(o, target) {
     const m = this.tracers[this.tracerNext];
     this.tracerNext = (this.tracerNext + 1) % this.tracers.length;
-    const dx = player.pos.x - o.x;
-    const dz = player.pos.z - o.z;
+    const dx = target.x - o.x;
+    const dz = target.z - o.z;
     const d = Math.hypot(dx, dz) || 1;
     m.position.set(o.x + dx * 0.5, 1.35, o.z + dz * 0.5);
     m.rotation.set(0, Math.atan2(dx, dz), 0);
@@ -548,11 +553,20 @@ export class Police {
       }
 
       // Gunfire is a separate threat from the close-range arrest above: at two
-      // stars an officer with a clear shot applies modest, cooldown-limited damage.
+      // stars an officer with a clear shot takes a 0.55..0.7 chance to land a
+      // capped, cooldown-limited hit. Misses still trace toward a nearby point.
       if (wanted.stars >= 2 && d < 42 && clear && o.fireCooldown <= 0 && typeof player.damage === 'function') {
-        const dmg = 7 + Math.min(6, (wanted.stars - 2) * 3);
-        player.damage(dmg);
-        this._tracer(o, player);
+        const chance = clamp(0.55 + (wanted.stars - 2) * 0.0375, 0.55, 0.7);
+        if (this.fireRng() < chance) {
+          const dmg = Math.min(7, 5 + Math.min(2, wanted.stars - 2));
+          player.damage(dmg, o);
+          this._tracer(o, player.pos);
+        } else {
+          const spread = 2.4 + d * 0.05;
+          this._shotPoint.x = player.pos.x + (this.fireRng() * 2 - 1) * spread;
+          this._shotPoint.z = player.pos.z + (this.fireRng() * 2 - 1) * spread;
+          this._tracer(o, this._shotPoint);
+        }
         o.fireCooldown = Math.max(0.65, 1.6 - (wanted.stars - 2) * 0.25) + this.rng() * 0.16;
       }
 
