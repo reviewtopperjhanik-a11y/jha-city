@@ -2,6 +2,8 @@
 // One stylesheet (hud.css), six grid zones, mode-driven action buttons,
 // Edit HUD with persistence and overlap checks. No per-button positioning.
 
+import { normalizeLayout } from '../core/save.js';
+
 const LAYOUT_KEY = 'jha-city-hud-layout-v1';
 const MODES = ['foot', 'nearVehicle', 'car', 'bike', 'armed', 'photo', 'menu'];
 const clamp100 = (v) => Math.max(0, Math.min(100, Number(v) || 0));
@@ -56,23 +58,18 @@ function loadLayout() {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY);
     if (!raw) return base;
-    const saved = JSON.parse(raw);
-    return {
-      offsets: saved.offsets && typeof saved.offsets === 'object' ? saved.offsets : {},
-      sizes: saved.sizes && typeof saved.sizes === 'object' ? saved.sizes : {},
-      alpha: saved.alpha && typeof saved.alpha === 'object' ? saved.alpha : {},
-      preset: PRESETS.includes(saved.preset) ? saved.preset : 'right',
-      steering: ['joystick', 'tilt', 'drag'].includes(saved.steering) ? saved.steering : 'joystick',
-    };
+    return normalizeLayout(JSON.parse(raw)) || base;
   } catch {
     return base;
   }
 }
 
 export class Hud {
-  constructor(root, { onAction = () => {} } = {}) {
+  constructor(root, { onAction = () => {}, onSaveLayout = () => {}, onSteering = () => {} } = {}) {
     this.root = root;
     this.onAction = onAction;
+    this.onSaveLayout = onSaveLayout;
+    this.onSteering = onSteering;
     this.mode = 'foot';
     this.previousMode = 'foot';
     this.nitro = 0;
@@ -488,6 +485,7 @@ export class Hud {
     for (const btn of this.editOverlay.querySelectorAll('[data-steer]')) {
       btn.addEventListener('click', () => {
         this.layout.steering = btn.dataset.steer;
+        this.onSteering(this.layout.steering);
         this._applyLayout();
         this.toast(`STEERING: ${this.layout.steering.toUpperCase()}`);
       });
@@ -618,9 +616,18 @@ export class Hud {
     this.editOverlay.setAttribute('aria-hidden', 'true');
   }
 
+  // Slot saves carry the layout too; localStorage stays as the legacy cache.
+  applyLayout(layout) {
+    const clean = normalizeLayout(layout);
+    this.layout = clean || blankLayout();
+    this._applyLayout();
+    return this.layout;
+  }
+
   saveLayout() {
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(this.layout));
+      this.onSaveLayout(this.layout);
       return true;
     } catch {
       return false;

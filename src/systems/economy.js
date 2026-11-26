@@ -11,6 +11,7 @@ export const PRICES = {
   car: 7800,
   engine: 2800,
   body: 2200,
+  handling: 2400,
   paint: 650,
   health: 350,
   armor: 600,
@@ -146,6 +147,35 @@ export class Economy {
   nextPaint(color) {
     const i = PAINT_COLORS.indexOf(color);
     return PAINT_COLORS[(i + 1 + PAINT_COLORS.length) % PAINT_COLORS.length];
+  }
+
+  // Save/garage descriptor shape: { type, color, price, upgrades }.
+  // upgrades always includes color so restore() can reapply a paint job.
+  serialize(vehicle, price) {
+    if (!vehicle) return null;
+    if (typeof vehicle.descriptor === 'function') {
+      return vehicle.descriptor(price ?? PRICES[vehicle.type] ?? 0);
+    }
+    return {
+      type: vehicle.type,
+      color: vehicle.color,
+      price: price ?? PRICES[vehicle.type] ?? 0,
+      upgrades: {
+        engine: !!vehicle.upgrades?.engine,
+        armor: !!vehicle.upgrades?.armor,
+        handling: !!vehicle.upgrades?.handling,
+        color: vehicle.color,
+      },
+    };
+  }
+
+  // One place for garage-upgrade side effects; spending/toasts stay in main.
+  // Returns false when the tune is already installed or the key is unknown.
+  upgrade(vehicle, key) {
+    if (!vehicle || (key !== 'engine' && key !== 'armor' && key !== 'handling')) return false;
+    if (vehicle.upgrades?.[key]) return false;
+    vehicle.applyUpgrades({ ...vehicle.upgrades, [key]: true });
+    return true;
   }
 
   spawnVehicle(type, color, upgrades = {}) {

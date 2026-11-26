@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { C } from '../look/palette.js';
 import { clamp, damp, TAU, wrapAngle } from '../util/math.js';
 import { createBlobShadow } from './blobshadow.js';
-import { emitDriftFx, emitImpactFx, updateFx } from './vehiclefx.js';
+import { emitDamageFx, emitDriftFx, emitExplosionFx, emitImpactFx, updateFx } from './vehiclefx.js';
 
 const geo = {};
 const mats = new Map();
@@ -66,9 +66,11 @@ export class Vehicle {
     this.baseColor = color;
     this.health = 100;
     this.boost = 100;
-    this.upgrades = { engine: false, armor: false };
+    this.upgrades = { engine: false, armor: false, handling: false };
     this.ai = false;
     this.role = 'parked';
+    this.exploded = false;
+    this._damageFxTimer = 0;
     this.stuckTime = 0;
     this.recoverCooldown = 0;
     this.blocked = false;
@@ -377,8 +379,51 @@ export class Vehicle {
   applyUpgrades(flags = {}) {
     this.upgrades.engine = !!flags.engine;
     this.upgrades.armor = !!flags.armor;
+    this.upgrades.handling = !!flags.handling;
     this.health = Math.min(this.maxHealth, Math.max(this.health, this.maxHealth));
     if (flags.color != null) this.setColor(flags.color);
+  }
+
+  // Central damage entry point. The exact impact arithmetic used by the old
+  // collision path is unchanged; callers (collision, collisions from traffic,
+  // parent integration) can now funnel through one method that escalates FX.
+  damage(amount, impactFx = true) {
+    const raw = Math.max(0, amount || 0);
+    if (raw <= 0 || this.role === 'wrecked') return this.health;
+    this.health = Math.max(0, this.health - raw);
+    if (this.look?.state?.bloomEnabled) {
+      if (impactFx) emitImpactFx(this.scene, this.pos.x, 0, this.pos.z);
+      emitDamageFx(this.scene, this.pos.x, 0, this.pos.z, this.health / this.maxHealth, this.heading);
+    }
+    if (this.health <= 0) this.explode();
+    return this.health;
+  }
+
+  // Idempotent: the first call wrecks the vehicle and emits one pooled blast;
+  // further calls are no-ops. Returns true only when the blast was emitted.
+  explode() {
+    if (this.exploded || this.role === 'wrecked') return false;
+    this.exploded = true;
+    this.health = 0;
+    this.speed = 0;
+    this.role = 'wrecked';
+    emitExplosionFx(this.scene, this.pos.x, 0, this.pos.z);
+    return true;
+  }
+
+  // Save/garage descriptor. Price is metadata only and never drives physics.
+  descriptor(price = 0) {
+    return {
+      type: this.type,
+      color: this.color,
+      price,
+      upgrades: {
+        engine: !!this.upgrades.engine,
+        armor: !!this.upgrades.armor,
+        handling: !!this.upgrades.handling,
+        color: this.color,
+      },
+    };
   }
 
   applyInput(dt, input, world, surfaceGrip = 1) {
@@ -397,7 +442,10 @@ export class Vehicle {
     this.speed = clamp(this.speed, -8, max);
 
     const grip = clamp(Math.abs(this.speed) / 9, 0.12, 1);
-    const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (0.5 + 0.5 * traction) * (input.handbrake ? 1.5 : 1);
+    // Handling tune raises the yaw rate without touching acceleration or grip.
+    const handling = this.upgrades.handling ? 1.32 : 1;
+    const rate = (this.type === 'bike' ? 2.3 : 1.75) * grip * (0.5 + 0.5 * traction)
+      * (input.handbrake ? 1.5 : 1) * handling;
     // Screen-right is world -x for a chase camera behind the vehicle: invert steer.
     this.heading = wrapAngle(this.heading - (input.steer || 0) * rate * dt * (this.speed < -0.5 ? -1 : 1));
 
@@ -419,8 +467,7 @@ export class Vehicle {
       this.speed *= 0.55;
       if (impact > 5) {
         const resistance = this.upgrades.armor ? 0.55 : 1;
-        this.health = Math.max(0, this.health - impact * 0.055 * resistance);
-        if (this.look?.state?.bloomEnabled) emitImpactFx(this.scene, this.pos.x, 0, this.pos.z);
+        this.damage(impact * 0.055 * resistance);
       }
     } else {
       this.pos.x = nx;
@@ -464,6 +511,20 @@ export class Vehicle {
 
     if (this.look?.state?.bloomEnabled && handbrake && Math.abs(this.speed) > 9 && Math.abs(steer) > 0.25) {
       emitDriftFx(this.scene, this.pos.x, 0, this.pos.z, this.heading, this.speed);
+    }
+
+    // Persistent engine smoke grows as health drops. The timer is a number,
+    // not an object, so no garbage is produced in the per-frame path.
+    const healthFrac = this.health / this.maxHealth;
+    if (healthFrac < 0.6 && this.look?.state?.bloomEnabled) {
+      this._damageFxTimer += dt || 0.016;
+      const interval = healthFrac < 0.25 ? 0.1 : healthFrac < 0.45 ? 0.18 : 0.3;
+      if (this._damageFxTimer >= interval) {
+        this._damageFxTimer = 0;
+        emitDamageFx(this.scene, this.pos.x, 0, this.pos.z, healthFrac, this.heading);
+      }
+    } else {
+      this._damageFxTimer = 0;
     }
     updateFx(dt, this.scene);
   }

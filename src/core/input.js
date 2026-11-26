@@ -2,6 +2,8 @@
 // Every touch target is a [data-action] element inside #hud; the joystick is
 // created here and placed by the HUD into the BL zone.
 
+import { SteeringMode } from '../systems/steering.js';
+
 const PAD_BUTTONS = [
   [0, 'jump'], [1, 'hb'], [2, 'horn'], [3, 'radio'],
   [5, 'boost'], [6, 'brake'], [7, 'gas'], [8, 'look'], [9, 'photo'],
@@ -46,6 +48,9 @@ export class Input {
     // Reused every frame so the input layer never creates GC pressure.
     this.axisResult = { x: 0, y: 0 };
     this.driveResult = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
+    // Phase 7: optional steering adapter. Null until a mode is chosen, so the
+    // default axis()/drivingInput() behaviour is byte-for-byte unchanged.
+    this.steering = null;
     this.padNext = {};
     this.padPrev = {};
     this.holdTimers = new Map();
@@ -244,6 +249,25 @@ export class Input {
     out.x = (this.keys.KeyD || this.keys.ArrowRight ? 1 : 0) - (this.keys.KeyA || this.keys.ArrowLeft ? 1 : 0);
     out.y = (this.keys.KeyW || this.keys.ArrowUp ? 1 : 0) - (this.keys.KeyS || this.keys.ArrowDown ? 1 : 0);
     return out;
+  }
+
+  // Optional Phase 7 hooks. They never change axis() or drivingInput():
+  // callers that want tilt/drag steering read steeringAxis() and copy its
+  // `steer`/x value into their own drive frame.
+  setSteering(mode = 'joystick') {
+    if (!this.steering) this.steering = new SteeringMode(mode);
+    else this.steering.setMode(mode);
+    return this.steering;
+  }
+
+  bindSteeringSurface(el) {
+    if (!this.steering) this.setSteering('drag');
+    return this.steering.bindSurface(el);
+  }
+
+  steeringAxis(pointerAxis = null) {
+    if (!this.steering) return this.axis();
+    return this.steering.axisFor(this.axis(), pointerAxis);
   }
 
   isDown(action) {

@@ -21,6 +21,9 @@ export class Player {
     this.hp = 100;
     this.armor = Math.max(0, Math.min(100, armor || 0));
     this.vehicle = null;
+    // One reused state object drives the short crouch/hop enter/exit pose.
+    // No vectors or arrays are allocated while the transition runs.
+    this.transition = { mode: 'idle', t: 0, duration: 0.26, vehicle: null, amount: 0 };
     this.walkPhase = 0;
     // Customisable materials are cloned per player so recolouring the avatar
     // never leaks into the cached materials shared with pedestrians.
@@ -150,7 +153,89 @@ export class Player {
     return this.vehicle ? Math.abs(this.vehicle.speed) : this._footSpeed || 0;
   }
 
+  get vehicleTransition() {
+    return this.transition.mode;
+  }
+
+  get transitionProgress() {
+    return this.transition.amount;
+  }
+
+  get isTransitioning() {
+    return this.transition.mode !== 'idle';
+  }
+
+  _resetTransitionVisuals() {
+    const tr = this.transition;
+    this.foot.scale.set(1, 1, 1);
+    if (tr.vehicle?.mesh) {
+      tr.vehicle.mesh.scale.y = 1;
+      tr.vehicle.mesh.position.y = 0;
+    }
+  }
+
+  _startTransition(mode, vehicle = null) {
+    this._resetTransitionVisuals();
+    const tr = this.transition;
+    tr.mode = mode;
+    tr.t = 0;
+    tr.amount = 0;
+    tr.vehicle = mode === 'enter' ? vehicle : null;
+  }
+
+  // A tiny weight-shift on the car when getting in, and a crouch-to-hop pose
+  // when stepping out. Purely visual: pos/collision and return values stay
+  // exactly as they were before the animation existed.
+  _applyTransition(dt) {
+    const tr = this.transition;
+    if (tr.mode === 'idle') return;
+    tr.t += dt;
+    const p = Math.min(1, tr.t / tr.duration);
+    const wave = Math.sin(p * Math.PI);
+    tr.amount = wave;
+    if (tr.mode === 'enter') {
+      const v = tr.vehicle;
+      if (v?.mesh) {
+        v.mesh.scale.y = 1 - wave * 0.075;
+        v.mesh.position.y = -wave * 0.05;
+      }
+    } else {
+      this.foot.scale.set(1 + wave * 0.05, 1 - wave * 0.16, 1 + wave * 0.05);
+      this.foot.position.y += wave * 0.3;
+      const bend = wave * 0.55;
+      this.legs[0].rotation.x += bend;
+      this.legs[1].rotation.x -= bend;
+      this.knees[0].rotation.x += bend * 0.6;
+      this.knees[1].rotation.x += bend * 0.6;
+      this.arms[0].rotation.x -= bend * 0.4;
+      this.arms[1].rotation.x += bend * 0.4;
+      this.shadow.scale.x *= 1 - wave * 0.18;
+      this.shadow.scale.z *= 1 - wave * 0.18;
+    }
+    if (p >= 1) {
+      this._resetTransitionVisuals();
+      tr.mode = 'idle';
+      tr.vehicle = null;
+      tr.amount = 0;
+    }
+  }
+
+  // Optional aliases: setVehicle/exitVehicle already drive the animation.
+  enterAnimated(v) {
+    return this.setVehicle(v);
+  }
+
+  exitAnimated(world) {
+    return this.exitVehicle(world);
+  }
+
   setVehicle(v) {
+    const previous = this.vehicle;
+    if (previous && previous !== v) {
+      // Switching cars (including a carjack) leaves the old one parked.
+      previous.role = 'parked';
+      previous.speed = 0;
+    }
     this.vehicle = v;
     if (v) {
       v.ai = false;
@@ -163,6 +248,7 @@ export class Player {
     }
     this.foot.visible = !v;
     this.shadow.visible = !v;
+    this._startTransition(v ? 'enter' : 'idle', v);
   }
 
   exitVehicle(world) {
@@ -195,6 +281,7 @@ export class Player {
     this.foot.rotation.set(0, this.heading, 0);
     this.shadow.visible = true;
     this.shadow.position.set(this.pos.x, 0.045, this.pos.z);
+    this._startTransition('exit');
     return v;
   }
 
@@ -233,6 +320,7 @@ export class Player {
     this.foot.visible = true;
     this.shadow.visible = true;
     this.shadow.position.set(x, 0.045, z);
+    this._startTransition('idle');
   }
 
   update(dt, input, world, cameraYaw, surfaceGrip = 1) {
@@ -262,6 +350,7 @@ export class Player {
       this.heading = v.heading;
       this.foot.visible = false;
       this.shadow.visible = false;
+      this._applyTransition(dt);
       return;
     }
 
@@ -333,5 +422,6 @@ export class Player {
     this.shadow.visible = true;
     this.shadow.position.set(this.pos.x, 0.045, this.pos.z);
     this.shadow.scale.set(spread + run * 0.25, 1, spread * 0.74 + run);
+    this._applyTransition(dt);
   }
 }

@@ -5,6 +5,7 @@ import { createLook } from './look/look.js';
 import { createCity } from './world/city.js';
 import { Input } from './core/input.js';
 import { GameAudio } from './core/audio.js';
+import { createHaptics } from './core/haptics.js';
 import { loadSave, saveGame, saveSlot, loadSlot, listSlots, currentSlot } from './core/save.js';
 import { Player } from './entities/player.js';
 import { Traffic } from './systems/traffic.js';
@@ -15,6 +16,9 @@ import { Economy, PRICES, PAINT_COLORS } from './systems/economy.js';
 import { Police } from './systems/police.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
+import { MISSION_DATA, storyCount as STORY_COUNT } from './data/missions.js';
+import { MissionOverlay } from './systems/missionOverlay.js';
+import { SteeringMode } from './systems/steering.js';
 import { Hud } from './systems/hud.js';
 import { Minimap } from './systems/minimap.js';
 import { Settings } from './systems/settings.js';
@@ -61,9 +65,31 @@ save.activeSlot = currentSlot();
 // advances incrementally so changing the length never makes time jump.
 let clockHours = save.hours;
 const currentHours = () => clockHours;
-const hud = new Hud(ui);
-const input = new Input(ui);
 const audio = new GameAudio();
+audio.setEnabled(save.sound !== false);
+const haptics = createHaptics({ enabled: save.vibration !== false });
+// One bridge keeps shot feedback in sync without touching combat's pooled FX.
+const playShot = audio.shot.bind(audio);
+audio.shot = (id, ...rest) => {
+  const result = playShot(id, ...rest);
+  haptics.shot(id);
+  return result;
+};
+const steering = new SteeringMode(save.steering);
+const hud = new Hud(ui, {
+  onSaveLayout: (layout) => {
+    save.hudLayout = layout;
+    saveGame(save, true);
+  },
+  onSteering: (mode) => syncSteeringFromHud(mode),
+});
+if (save.hudLayout) hud.applyLayout(save.hudLayout);
+const input = new Input(ui);
+// One adapter feeds every consumer (foot movement and drivingInput). In
+// joystick mode this is a pure pass-through, so tactile controls stay intact.
+const rawAxis = input.axis.bind(input);
+input.axis = () => steering.axisFor(rawAxis(), null);
+steering.bindSurface(hud.lookZone);
 const achievements = new Achievements(save, { toast: (msg) => hud.toast(msg) });
 const photo = new PhotoMode(camera, canvas, {
   hud,
@@ -72,6 +98,7 @@ const photo = new PhotoMode(camera, canvas, {
 audio.setRadio(save.radio || 0);
 hud.setRadio(audio.radioLabel());
 const menu = new Menu(ui, { toast: (msg) => hud.toast(msg) });
+const missionOverlay = new MissionOverlay(ui, { toast: (msg) => hud.toast(msg) });
 // Weather is built before settings so the quality callback can disable it on LOW.
 const weather = new Weather(scene, look, world, {
   change: (label) => hud.toast(`WEATHER: ${label}`),
@@ -90,6 +117,10 @@ const settings = new Settings(ui, look, save, {
     weather.setLowQuality(low);
     for (const listener of qualityListeners) listener(low);
   },
+  onFpsCap: (cap) => { save.fpsCap = cap; },
+  onSound: (on) => audio.setEnabled(on),
+  onVibration: (on) => haptics.setEnabled(on),
+  onSteering: (mode) => applySteeringMode(mode),
 });
 const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
 hud.attachMinimap(minimap.wrap);
@@ -124,6 +155,7 @@ const traffic = new Traffic(scene, look, world, {
   },
   accident: () => {
     audio.blip(92, 0.32, 'sawtooth', 0.11);
+    haptics.collision(0.7);
     hud.toast('ACCIDENT — CROWD GATHERING');
   },
   lights,
@@ -152,13 +184,20 @@ const missions = new Missions(scene, world, {
     save.missionsDone += 1;
   },
   toast: (msg) => hud.toast(msg),
-  dialog: (speaker, lines, done) => menu.showDialog(speaker, lines, done),
+  dialog: (speaker, lines, done) => missionOverlay.dialog(speaker, lines, done),
   story: (step) => {
     save.storyStep = step;
     saveGame(save, true);
   },
   storyStep: save.storyStep,
+  data: MISSION_DATA,
+  pass: (info) => missionOverlay.showPass(info),
+  fail: (info) => {
+    missionOverlay.showFail(info);
+    haptics.impact('HEAVY');
+  },
 }, look, traffic);
+missions.restoreProgress?.(save.mission || null);
 
 wanted.onChange = (stars, before) => {
   if (stars === 0) hud.toast('YOU LOST THEM');
@@ -168,9 +207,9 @@ wanted.onChange = (stars, before) => {
   else hud.toast(`WANTED DOWN TO ${stars}`);
 };
 
-// Start on the bike; E puts you on foot, E again carjacks the nearest car.
-const starter = traffic.vehicles.find((v) => v.type === 'bike');
-if (starter) player.setVehicle(starter);
+// Resume the saved ride when possible; E puts you on foot, E again carjacks
+// the nearest car. Fresh saves still start on a bike.
+restoreCurrentVehicle();
 
 let gameTime = 0;
 let cameraYaw = player.heading;
@@ -200,6 +239,78 @@ const achievementFrame = {
 };
 const mapOptions = { landmarks: world.landmarks, incidents: [] };
 const markerResult = {};
+
+function applySteeringMode(mode) {
+  const next = ['joystick', 'tilt', 'drag'].includes(mode) ? mode : 'joystick';
+  save.steering = next;
+  if (save.hudLayout && typeof save.hudLayout === 'object') save.hudLayout.steering = next;
+  if (hud?.layout) {
+    hud.layout.steering = next;
+    hud._applyLayout();
+  }
+  steering.setMode(next);
+  return next;
+}
+
+function syncSteeringFromHud(mode) {
+  // The HUD editor and Settings panel share one source of truth.
+  if (typeof settings !== 'undefined' && settings && settings.steering !== mode) {
+    settings.steering = mode;
+    settings._apply();
+    return;
+  }
+  applySteeringMode(mode);
+}
+
+function restoreCurrentVehicle() {
+  const d = save.vehicle;
+  const candidates = traffic.vehicles.filter((v) => v && v.role !== 'police' && v.role !== 'wrecked');
+  let v = null;
+  if (d && d.type) {
+    v = candidates.find((c) => c.type === d.type && (d.color == null || c.color === d.color)) || null;
+  }
+  if (!v) v = candidates.find((c) => c.type === 'bike') || null;
+  if (!v) return;
+  if (d?.upgrades) v.applyUpgrades?.(d.upgrades);
+  if (Number.isFinite(d?.health)) v.health = Math.max(1, Math.min(v.maxHealth || 100, d.health));
+  if (Number.isFinite(d?.boost)) v.boost = Math.max(0, Math.min(100, d.boost));
+  player.setVehicle(v);
+}
+
+function currentVehicleDescriptor() {
+  const v = player.vehicle;
+  if (!v || v.role === 'wrecked') return null;
+  return {
+    type: v.type,
+    color: v.color,
+    health: v.health,
+    boost: v.boost,
+    upgrades: { ...v.upgrades, color: v.color },
+  };
+}
+
+function collectSaveState() {
+  save.x = player.pos.x;
+  save.z = player.pos.z;
+  save.hours = currentHours();
+  save.hp = player.hp;
+  save.armor = player.armor;
+  save.mission = missions.serialize?.() || null;
+  save.vehicle = currentVehicleDescriptor();
+  save.hudLayout = hud.layout;
+  save.waypoint = minimap.waypoint ? { x: minimap.waypoint.x, z: minimap.waypoint.z } : null;
+  return save;
+}
+
+function flushSave() {
+  collectSaveState();
+  saveGame(save, true);
+}
+
+window.addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushSave();
+});
 
 function setAudioFrame(speed, throttle, wanted, driving, time, siren, sirenPan, heli, rain, skid = 0) {
   audioFrame.speed = speed;
@@ -454,12 +565,22 @@ function spend(cost) {
 }
 
 function ownedDescriptor(v) {
-  return (save.owned || []).find((d) => d.type === v.type && d.color === v.color) || null;
+  const list = save.owned || [];
+  return list.find((d) => d.type === v.type && d.color === v.color)
+    || list.find((d) => d.type === v.type)
+    || null;
 }
 
 function rememberVehicle(v) {
-  const d = ownedDescriptor(v);
-  if (d) d.upgrades = { ...v.upgrades, color: v.color };
+  if (!v) return;
+  save.owned = save.owned || [];
+  let d = ownedDescriptor(v);
+  if (!d) {
+    d = economy.serialize(v, PRICES[v.type]);
+    save.owned.push(d);
+  } else {
+    Object.assign(d, economy.serialize(v, d.price));
+  }
 }
 
 function openBusinessMenu(loc) {
@@ -474,11 +595,10 @@ function handleGarage(action) {
     const price = PRICES[type];
     if (!spend(price)) return;
     const color = PAINT_COLORS[type === 'bike' ? 0 : 1];
-    const descriptor = { type, color, price, upgrades: { engine: false, armor: false } };
     save.owned = save.owned || [];
-    save.owned.push(descriptor);
     achievements.event('collector');
-    const v = economy.spawnVehicle(type, color, descriptor.upgrades);
+    const v = economy.spawnVehicle(type, color, {});
+    save.owned.push(economy.serialize(v, price));
     player.setVehicle(v);
     hud.toast(`${type === 'bike' ? 'BIKE' : 'COUPE'} BOUGHT — ${v.type.toUpperCase()}`);
     saveGame(save, true);
@@ -491,8 +611,10 @@ function handleGarage(action) {
       return;
     }
     if (player.vehicle) player.exitVehicle(world);
-    economy.restore([descriptor]);
-    player.setVehicle(economy.ownedVehicles[0]);
+    economy.restore(save.owned || []);
+    const spawned = economy.ownedVehicles.find((v) => v.type === descriptor.type && v.color === descriptor.color)
+      || economy.ownedVehicles[0];
+    if (spawned) player.setVehicle(spawned);
     hud.toast('OWNED VEHICLE READY');
     saveGame(save, true);
     return;
@@ -523,15 +645,16 @@ function handleGarage(action) {
     rememberVehicle(v);
     hud.toast('FRESH PAINT');
   } else {
-    const key = action === 'engine' ? 'engine' : 'armor';
+    const key = action === 'engine' ? 'engine' : action === 'handling' ? 'handling' : 'armor';
     if (v.upgrades[key]) {
       hud.toast('ALREADY INSTALLED');
       return;
     }
     if (!spend(PRICES[key])) return;
-    v.applyUpgrades({ ...v.upgrades, [key]: true });
+    economy.upgrade(v, key);
     rememberVehicle(v);
-    hud.toast(key === 'engine' ? 'ENGINE TUNED' : 'BODY REINFORCED');
+    hud.toast(key === 'handling' ? 'SPORT SUSPENSION FITTED'
+      : key === 'engine' ? 'ENGINE TUNED' : 'BODY REINFORCED');
   }
   saveGame(save, true);
 }
@@ -557,6 +680,7 @@ function handleSafehouse(action) {
     hud.toast('RESTED — FULL HEALTH');
   } else if (action.startsWith('save-')) {
     const slot = Number(action.slice(5));
+    flushSave();
     saveSlot(slot, { ...save, hp: player.hp, armor: player.armor });
     save.activeSlot = slot;
     settings._renderSlots?.();
@@ -578,6 +702,7 @@ function applySlotState(slot, state) {
   Object.assign(save, state);
   save.activeSlot = slot;
   menu.close();
+  missionOverlay.hide();
   photo.exit();
   if (player.vehicle) player.exitVehicle(world);
   wanted.clear(true);
@@ -585,28 +710,29 @@ function applySlotState(slot, state) {
   gangs.clearAll();
   combat.reset();
   economy.restore(save.owned || []);
-  player.hp = 100;
+  player.hp = Number.isFinite(save.hp) ? save.hp : 100;
   player.armor = save.armor || 0;
   const spawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
   player.respawnAt(spawn.x, spawn.z, 0);
   clockHours = save.hours || 8;
   gameTime = 0;
+  missions.restoreProgress?.(save.mission || null);
   missions.storyStep = save.storyStep || 0;
-  settings.mode = ['auto', 'high', 'medium', 'low'].includes(save.quality) ? save.quality : 'auto';
-  settings.autoTier = Number.isFinite(save.autoTier) ? Math.max(0, Math.min(2, Math.round(save.autoTier))) : 1;
-  settings.showFps = save.showFps !== false;
-  settings.dayLength = [5, 10, 20, 40].includes(Number(save.dayLength)) ? Number(save.dayLength) : 10;
-  settings.autoAim = save.autoAim !== false;
+  minimap.waypoint = save.waypoint ? { x: save.waypoint.x, z: save.waypoint.z } : null;
+  minimap._updateWaypointUI?.();
+  if (save.hudLayout) hud.applyLayout(save.hudLayout);
+  settings.syncFromSave();
   combat.setAutoAim(settings.autoAim);
   weather.setMode(save.weather || 'auto');
   player.applyStyle(save.style);
+  restoreCurrentVehicle();
   audio.setRadio(save.radio || 0);
   hud.setRadio(audio.radioLabel());
   achievements.unlocked = new Set(Array.isArray(save.achievements) ? save.achievements : []);
-  settings._apply();
   settings._renderSlots?.();
   snapCamera();
   hud.toast(`SLOT ${slot} LOADED`);
+  flushSave();
   saveGame(save, true, slot);
 }
 
@@ -805,24 +931,31 @@ function threatAngle() {
   // Screen-right is world -x for the chase camera.
   return Math.atan2(-dx * Math.cos(cameraYaw) + dz * Math.sin(cameraYaw), dx * Math.sin(cameraYaw) + dz * Math.cos(cameraYaw));
 }
-player.onDamage = (amount) => hud.damage(Math.min(1, amount / 18), threatAngle());
+player.onDamage = (amount) => {
+  hud.damage(Math.min(1, amount / 18), threatAngle());
+  haptics.hit();
+};
 
 let last = performance.now();
+let lastDraw = last;
 function frame(now) {
   requestAnimationFrame(frame);
+  if (settings.fpsCap && now - lastDraw < 1000 / settings.fpsCap - 1) return;
+  lastDraw = now;
   const rawDt = Math.max(0.0001, (now - last) / 1000);
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
   gameTime += dt;
   clockHours = (clockHours + dt * (24 / (Math.max(1, save.dayLength || 10) * 60))) % 24;
   input.poll();
-  if (menu.isOpen && photo.active) photo.exit();
+  const overlayOpen = missionOverlay.isOpen;
+  if ((menu.isOpen || overlayOpen) && photo.active) photo.exit();
   // One mode drives both the button set and the input context. The joystick
   // stays available in every situation; the bottom-centre zone stays empty.
   const nearVehicle = !player.vehicle && !!traffic.nearestVehicle(player.pos);
-  const armed = !player.vehicle && !photo.active && !menu.isOpen && !settings.isOpen && combat.isArmed();
+  const armed = !player.vehicle && !photo.active && !menu.isOpen && !settings.isOpen && !overlayOpen && combat.isArmed();
   const hudMode = photo.active ? 'photo'
-    : (menu.isOpen || settings.isOpen) ? 'menu'
+    : (menu.isOpen || settings.isOpen || overlayOpen) ? 'menu'
       : player.vehicle ? (player.vehicle.type === 'bike' ? 'bike' : 'car')
         : armed ? 'armed'
           : nearVehicle ? 'nearVehicle' : 'foot';
@@ -845,7 +978,7 @@ function frame(now) {
     return;
   }
 
-  if (menu.isOpen) {
+  if (menu.isOpen || overlayOpen) {
     audio.update(dt, setAudioFrame(0, 0, 0, false, -1, 0, 0, 0, weather.level));
     hud.tick(dt);
     settings.update(dt, 1 / rawDt);
@@ -860,15 +993,23 @@ function frame(now) {
   if (player.vehicle && player.vehicle.health < healthBefore - 0.4) {
     const impact = (healthBefore - player.vehicle.health) * 0.3;
     player.damage(impact);
-    if (impact > 1.5) audio.blip(110, 0.16, 'sawtooth', 0.06);
+    if (impact > 1.5) {
+      audio.blip(110, 0.16, 'sawtooth', 0.06);
+      haptics.collision(Math.min(1, impact / 12));
+    }
   }
   if (player.hp <= 0) respawn();
   if (player.vehicle && player.vehicle.health <= 0) {
     const wreck = player.vehicle;
     player.exitVehicle(world);
-    wreck.role = 'wrecked';
-    wreck.health = 0;
-    wreck.speed = 0;
+    if (typeof wreck.explode === 'function') wreck.explode();
+    else {
+      wreck.role = 'wrecked';
+      wreck.health = 0;
+      wreck.speed = 0;
+    }
+    audio.blip(72, 0.7, 'sawtooth', 0.18);
+    haptics.collision(1);
     hud.toast('VEHICLE WRECKED');
   }
 
@@ -904,6 +1045,7 @@ function frame(now) {
   achievementFrame.weather = weather.level;
   achievementFrame.missionsDone = save.missionsDone;
   achievementFrame.storyStep = save.storyStep;
+  achievementFrame.storyTotal = STORY_COUNT;
   if (achievements.update(dt, achievementFrame)) saveGame(save, true);
 
   const driving = !!player.vehicle;
@@ -927,12 +1069,13 @@ function frame(now) {
     skid,
   ));
 
-  const target = missions.currentPoint();
+  const missionTarget = missions.currentPoint?.() || null;
+  const target = missionTarget || minimap.waypoint;
   if (target) {
     missions.setDistance(dist2(player.pos.x, player.pos.z, target.x, target.z));
     if (!photo.active) {
       const marker = screenMarker(camera, target, window.innerWidth, window.innerHeight, 82, markerResult);
-      marker.label = (missions.active?.config?.name || 'OBJECTIVE').slice(0, 18);
+      marker.label = (missionTarget ? (missions.active?.config?.name || 'OBJECTIVE') : 'WAYPOINT').slice(0, 18);
       hud.updateArrow(marker);
     }
   } else {
@@ -958,10 +1101,7 @@ function frame(now) {
     minimap.update(player, world, missions, police, wanted, economy, mapOptions);
   }
 
-  save.x = player.pos.x;
-  save.z = player.pos.z;
-  save.hours = currentHours();
-  save.armor = player.armor;
+  collectSaveState();
   saveGame(save);
 
   renderFrame();
@@ -978,5 +1118,6 @@ requestAnimationFrame(frame);
 window.__jha = {
   player, world, traffic, police, missions, wanted, economy, menu, look, save,
   settings, minimap, lights, weather, audio, hud, input, photo, achievements, layout: hud.zones,
-  combat, gangs,
+  combat, gangs, haptics, steering, missionOverlay, missionData: MISSION_DATA,
+  collectSaveState, flushSave,
 };

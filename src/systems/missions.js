@@ -3,99 +3,36 @@ import { C } from '../look/palette.js';
 import { Vehicle } from '../entities/vehicle.js';
 import { makeRng } from '../util/rng.js';
 import { dist2 } from '../util/math.js';
+import { MISSION_DATA, storyCount } from '../data/missions.js';
 
-const JOBS = {
-  delivery: {
-    name: 'DELIVERY', points: 2, base: 450,
-    labels: ['COLLECT PACKAGE', 'DELIVER PACKAGE'],
-    desc: 'Two stops, no timer. Easy money.',
-  },
-  race: {
-    name: 'STREET RACE', points: 4, base: 1100, speedBonus: true, vehicle: true,
-    labels: ['CHECKPOINT 1', 'CHECKPOINT 2', 'CHECKPOINT 3', 'FINISH'],
-    desc: 'Four checkpoints. Fast times pay more.',
-  },
-  taxi: {
-    name: 'TAXI RUN', points: 2, base: 520,
-    labels: ['PICK UP FARE', 'DROP OFF FARE'],
-    desc: 'Short fare across town.',
-  },
-  courier: {
-    name: 'COURIER', points: 3, base: 700, time: 75, bonusPerSec: 7, vehicle: true,
-    labels: ['PICK UP PARCEL', 'SORTING POINT', 'FINAL DROP'],
-    desc: 'Three drops against the clock.',
-  },
-  vip: {
-    name: 'VIP DRIVE', points: 2, base: 1250, vehicle: true, maxSpeed: 24, maxDamage: 22,
-    labels: ['PICK UP VIP', 'DROP OFF VIP'],
-    desc: 'Drive smooth: stay under 86 km/h and avoid damage.',
-  },
-  chase: {
-    name: 'SUSPECT CHASE', points: 1, base: 1350, time: 95, vehicle: true, suspect: true,
-    labels: ['CATCH THE SUSPECT'],
-    desc: 'Ram or reach the fleeing car before time runs out.',
-  },
-  trial: {
-    name: 'TIME TRIAL', points: 5, base: 900, time: 60, bonusPerSec: 10, vehicle: true,
-    labels: ['GATE 1', 'GATE 2', 'GATE 3', 'GATE 4', 'FINISH'],
-    desc: 'Five gates. Beat the clock for a bonus.',
-  },
-};
-
-const STORY = [
-  {
-    title: 'FIRST FARE', speaker: 'NIX', job: 'taxi', points: 2, base: 900,
-    labels: ['PICK UP NIX', 'DROP NIX AT THE PIER'],
-    lines: [
-      'You need cash? I know a guy who pays for wheels.',
-      'Pick me up, take it easy, and I will show you where the real jobs are.',
-    ],
-    outro: ['Not bad. The city talks about a courier who never misses a drop.'],
-  },
-  {
-    title: 'PACKAGE RUN', speaker: 'MARA', job: 'courier', points: 3, base: 1250,
-    labels: ['COLLECT THE CASE', 'SWAP POINT', 'MARA’S CONTACT'],
-    lines: [
-      'Nix says you drive clean. Good. I need this case moved quietly.',
-      'Three stops, stay moving, and do not lead anyone back to me.',
-    ],
-    outro: ['The case was clean. Next time we do it with heat behind us.'],
-  },
-  {
-    title: 'HOT PURSUIT', speaker: 'NIX', job: 'chase', points: 1, base: 1700,
-    labels: ['CATCH THE RIVAL'],
-    lines: [
-      'That driver owes me. Bring the car in before the cops do.',
-      'Bump it hard enough to stop, then get close and we take it.',
-    ],
-    outro: ['You brought it in. Mara wants to see you at the safehouse.'],
-  },
-  {
-    title: 'SUNSET SHOWDOWN', speaker: 'MARA', job: 'trial', points: 5, base: 2300,
-    labels: ['GATE 1', 'GATE 2', 'GATE 3', 'GATE 4', 'FINISH'],
-    lines: [
-      'Last run. Five gates along the strip, one shot.',
-      'Leave the sirens behind and finish before the sun goes down.',
-    ],
-    outro: ['You made it. The city is yours now, driver.'],
-  },
-];
+export { MISSION_DATA, storyCount };
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const labelsOf = (entry) => (entry && (entry.objectives || entry.labels)) || [];
 
 export class Missions {
-  constructor(scene, world, callbacks = {}, look = null, traffic = null) {
+  constructor(scene, world, callbacks = {}, look = null, traffic = null, data = null) {
     this.world = world;
     this.scene = scene;
     this.look = look;
     this.traffic = traffic;
+
+    // Content is data-driven. `callbacks.data` is the preferred override so the
+    // existing (scene, world, callbacks, look, traffic) signature stays intact.
+    this.data = callbacks.data || data || MISSION_DATA;
+    this.jobs = this.data.jobs || {};
+    this.stories = this.data.story || this.data.stories || [];
+    this.storyCount = this.stories.length;
+
     this.onReward = callbacks.reward || (() => {});
     this.onToast = callbacks.toast || (() => {});
     this.onDialog = callbacks.dialog || ((speaker, lines, done) => done());
     this.onStory = callbacks.story || (() => {});
+    this.onPass = callbacks.pass || (() => {});
+    this.onFail = callbacks.fail || (() => {});
     this.active = null;
     this.done = 0;
-    this.storyStep = clamp(Math.round(callbacks.storyStep || 0), 0, STORY.length);
+    this.storyStep = clamp(Math.round(callbacks.storyStep || 0), 0, this.storyCount);
     this.rng = makeRng(4242);
     this._suspect = null;
 
@@ -119,20 +56,42 @@ export class Missions {
   }
 
   get jobTypes() {
-    return Object.keys(JOBS);
+    return Object.keys(this.jobs);
+  }
+
+  get freeRoam() {
+    return !this.active;
   }
 
   jobInfo(type) {
-    return JOBS[type] || null;
+    return this.jobs[type] || null;
+  }
+
+  // Turn authored data into the flat config the engine uses. The aliases make
+  // hand-written missions terse while keeping older saves and harnesses valid.
+  _configFor(type, overrides = {}) {
+    const base = this.jobs[type] || {};
+    const labels = labelsOf(overrides).length ? labelsOf(overrides) : labelsOf(base);
+    const rewards = overrides.rewards || base.rewards || {};
+    const config = {
+      ...base,
+      ...overrides,
+      labels,
+      points: overrides.waypoints ?? overrides.points ?? base.waypoints ?? base.points ?? labels.length,
+      base: overrides.base ?? rewards.base ?? base.base ?? 450,
+    };
+    if (config.speedBonus === undefined && rewards.speedBonus !== undefined) config.speedBonus = rewards.speedBonus;
+    if (config.bonusPerSec === undefined && rewards.bonusPerSec !== undefined) config.bonusPerSec = rewards.bonusPerSec;
+    return config;
   }
 
   start(type, player) {
-    if (!JOBS[type]) return false;
+    if (!this.jobs[type]) return false;
     if (this.active) {
       this.onToast('Finish the current job first');
       return false;
     }
-    const config = JOBS[type];
+    const config = this._configFor(type);
     if (config.vehicle && player.mode === 'foot') {
       this.onToast('Steal a bike or car first');
       return false;
@@ -146,32 +105,26 @@ export class Missions {
       this.onToast('Finish the current job first');
       return false;
     }
-    if (this.storyStep >= STORY.length) {
+    if (this.storyStep >= this.storyCount) {
       this.onToast('STORY COMPLETE — free roam');
       return false;
     }
     const step = this.storyStep;
-    const story = STORY[step];
-    this.onDialog(story.speaker, story.lines, () => this._beginStory(step, player));
+    const story = this.stories[step];
+    this.onDialog(story.speaker, story.lines || [], () => this._beginStory(step, player));
     return true;
   }
 
   _beginStory(step, player) {
     if (this.active) return;
-    const story = STORY[clamp(step, 0, STORY.length - 1)];
-    const config = {
-      ...JOBS[story.job],
-      name: story.title,
-      points: story.points,
-      labels: story.labels,
-      base: story.base,
-      vehicle: true,
-    };
+    const story = this.stories[clamp(step, 0, this.storyCount - 1)];
+    if (!story) return;
+    const config = this._configFor(story.job, { ...story, vehicle: true });
     this._begin(story.job, player, config, { story, step });
   }
 
   _begin(type, player, config, meta = {}) {
-    const count = config.suspect ? 1 : config.points;
+    const count = config.suspect ? 1 : Math.max(1, config.points || 1);
     const points = [];
     for (let i = 0; i < count; i++) points.push(this.world.randomRoadPoint(this.rng));
     this.active = {
@@ -197,7 +150,7 @@ export class Missions {
   _currentPoint() {
     if (!this.active) return null;
     if (this._suspect) return this._suspect.pos;
-    return this.active.points[this.active.index];
+    return this.active.points[this.active.index] || null;
   }
 
   currentPoint() {
@@ -258,6 +211,15 @@ export class Missions {
   _complete(player) {
     const active = this.active;
     const reward = this._reward(player);
+    const passInfo = {
+      type: active.type,
+      name: active.config.name,
+      title: active.config.name,
+      reward,
+      story: !!active.story,
+      storyStep: active.storyStep ?? null,
+      label: active.label?.[Math.min(active.index, active.label.length - 1)] || '',
+    };
     this.onReward(reward, active.type);
     this.onToast(`+$${reward}  ${active.config.name} COMPLETE`);
     const story = active.story;
@@ -267,18 +229,37 @@ export class Missions {
     this.done++;
     this.marker.visible = false;
     if (story) {
-      this.storyStep = clamp((step ?? 0) + 1, 0, STORY.length);
+      this.storyStep = clamp((step ?? 0) + 1, 0, this.storyCount);
       this.onStory(this.storyStep);
-      if (story.outro?.length) this.onDialog(story.speaker, story.outro, () => {});
-      else if (this.storyStep >= STORY.length) this.onToast('STORY COMPLETE — free roam');
+      if (story.outro?.length) {
+        // Let the pass screen appear after the closing radio call.
+        this.onDialog(story.speaker, story.outro, () => this.onPass(passInfo));
+      } else {
+        this.onPass(passInfo);
+        if (this.storyStep >= this.storyCount) this.onToast('STORY COMPLETE — free roam');
+      }
+    } else {
+      this.onPass(passInfo);
     }
   }
 
-  _fail(message) {
+  _fail(message, reason = message) {
+    const active = this.active;
+    if (!active) return;
+    const info = {
+      type: active.type,
+      name: active.config.name,
+      title: active.config.name,
+      message,
+      reason,
+      story: !!active.story,
+      storyStep: active.storyStep ?? null,
+    };
     this.onToast(message);
     this._clearSuspect();
     this.active = null;
     this.marker.visible = false;
+    this.onFail(info);
   }
 
   update(dt, player) {
@@ -292,26 +273,26 @@ export class Missions {
     const cfg = this.active.config;
 
     if (cfg.time && this.active.time > cfg.time) {
-      this._fail(`TIME UP — ${cfg.name} FAILED`);
+      this._fail(`TIME UP — ${cfg.name} FAILED`, 'time');
       return;
     }
     if (cfg.maxSpeed && player.speed > cfg.maxSpeed) {
       this.active.violationTime += dt;
       if (this.active.violationTime > 3 || this._damage(player) > cfg.maxDamage) {
-        this._fail('VIP RIDE RUINED');
+        this._fail('VIP RIDE RUINED', 'speed');
         return;
       }
     } else if (cfg.maxSpeed) {
       this.active.violationTime = Math.max(0, this.active.violationTime - dt * 0.5);
     } else if (cfg.maxDamage && this._damage(player) > cfg.maxDamage) {
-      this._fail(`TOO MUCH DAMAGE — ${cfg.name} FAILED`);
+      this._fail(`TOO MUCH DAMAGE — ${cfg.name} FAILED`, 'damage');
       return;
     }
 
     const p = this._currentPoint();
     if (p) this.marker.position.set(p.x, 0, p.z);
     const radius = cfg.suspect ? 6 : 7.5;
-    if (dist2(player.pos.x, player.pos.z, p.x, p.z) >= radius) return;
+    if (!p || dist2(player.pos.x, player.pos.z, p.x, p.z) >= radius) return;
 
     if (cfg.suspect) {
       this._complete(player);
@@ -340,5 +321,80 @@ export class Missions {
 
   setDistance(d) {
     this._lastDistance = d;
+  }
+
+  // Save/load the active job without serialising Three.js objects. A chase's
+  // moving suspect is frozen at its last position so the job stays completable.
+  serialize() {
+    if (!this.active) return null;
+    const a = this.active;
+    const cfg = a.config || {};
+    const point = this._currentPoint();
+    return {
+      type: a.type,
+      config: {
+        name: cfg.name,
+        desc: cfg.desc,
+        base: a.base ?? cfg.base,
+        points: cfg.points,
+        labels: Array.isArray(cfg.labels) ? [...cfg.labels] : [],
+        time: cfg.time ?? null,
+        speedBonus: !!cfg.speedBonus,
+        bonusPerSec: cfg.bonusPerSec || 0,
+        vehicle: !!cfg.vehicle,
+        suspect: !!cfg.suspect,
+        maxSpeed: cfg.maxSpeed ?? null,
+        maxDamage: cfg.maxDamage ?? null,
+      },
+      story: a.story ? {
+        id: a.story.id,
+        title: a.story.title,
+        speaker: a.story.speaker,
+        outro: a.story.outro ? [...a.story.outro] : null,
+      } : null,
+      storyStep: a.storyStep ?? null,
+      progress: this.storyStep,
+      points: a.points.map((p) => ({ x: p.x, z: p.z })),
+      point: point ? { x: point.x, z: point.z } : null,
+      index: a.index,
+      time: a.time,
+      violationTime: a.violationTime || 0,
+      startHp: a.startHp,
+      startVehicleHealth: a.startVehicleHealth,
+      done: this.done,
+    };
+  }
+
+  restoreProgress(state) {
+    this._clearSuspect();
+    if (!state || !state.type) {
+      this.active = null;
+      this.marker.visible = false;
+      return;
+    }
+    const config = this._configFor(state.type, state.config || {});
+    const points = Array.isArray(state.points)
+      ? state.points.map((p) => ({ x: p.x, z: p.z }))
+      : [];
+    if (state.point && points.length) points[Math.min(state.index || 0, points.length - 1)] = { x: state.point.x, z: state.point.z };
+    if (!points.length) points.push({ x: 0, z: 65 });
+    this.active = {
+      type: state.type,
+      config,
+      story: state.story || null,
+      storyStep: Number.isFinite(state.storyStep) ? state.storyStep : null,
+      points,
+      index: clamp(Math.round(state.index || 0), 0, points.length - 1),
+      time: Number.isFinite(state.time) ? state.time : 0,
+      label: config.labels,
+      startHp: Number.isFinite(state.startHp) ? state.startHp : 100,
+      startVehicleHealth: Number.isFinite(state.startVehicleHealth) ? state.startVehicleHealth : 100,
+      violationTime: Number.isFinite(state.violationTime) ? state.violationTime : 0,
+      base: config.base,
+    };
+    if (Number.isFinite(state.progress)) this.storyStep = clamp(Math.round(state.progress), 0, this.storyCount);
+    if (Number.isFinite(state.done)) this.done = Math.max(0, Math.round(state.done));
+    this.marker.visible = true;
+    this._place();
   }
 }

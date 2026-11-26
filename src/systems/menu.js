@@ -3,6 +3,7 @@ import { STYLE_KEYS, styleLabel } from '../look/wardrobe.js';
 
 const money = (n) => `$${Math.round(n || 0)}`;
 const hex = (n) => `#${(n & 0xffffff).toString(16).padStart(6, '0')}`;
+const STORY_TOTAL = 5;
 
 export class Menu {
   constructor(root, { toast = () => {} } = {}) {
@@ -69,7 +70,8 @@ export class Menu {
   }
 
   showJobs(missions, onStart, onStory) {
-    const step = Math.min(missions.storyStep, 3) + 1;
+    const total = Math.max(STORY_TOTAL, Math.round(Number(missions.storyCount) || 0));
+    const step = Math.min(missions.storyStep, total - 1) + 1;
     const cards = missions.jobTypes.map((type) => {
       const info = missions.jobInfo(type);
       return `<button class="menu-item" data-job="${type}">
@@ -80,7 +82,7 @@ export class Menu {
     }).join('');
     const body = this._show('JOB BOARD', `
       <button class="menu-item story" data-story="1">
-        <span class="menu-item-title">STORY ${step}/4 · NEXT CHAPTER</span>
+        <span class="menu-item-title">STORY ${step}/${total} · NEXT CHAPTER</span>
         <span class="menu-item-sub">Dialogue, a bigger payout and a chain of jobs.</span>
       </button>
       <div class="menu-label">SIDE JOBS</div>
@@ -136,6 +138,7 @@ export class Menu {
         <button class="menu-item" data-action="buy-car"><span class="menu-item-title">BUY COUPE</span><span class="menu-item-price">${money(PRICES.car)}</span></button>
         <button class="menu-item" data-action="engine"><span class="menu-item-title">ENGINE TUNE</span><span class="menu-item-price">${money(PRICES.engine)}</span></button>
         <button class="menu-item" data-action="body"><span class="menu-item-title">REINFORCED BODY</span><span class="menu-item-price">${money(PRICES.body)}</span></button>
+        <button class="menu-item" data-action="handling"><span class="menu-item-title">SPORT SUSPENSION</span><span class="menu-item-price">${money(PRICES.handling ?? 1400)}</span></button>
         <button class="menu-item" data-action="paint"><span class="menu-item-title">PAINT JOB</span><span class="menu-item-price">${money(PRICES.paint)}</span></button>
         <button class="menu-item" data-action="spray"><span class="menu-item-title">PAY 'N' SPRAY</span><span class="menu-item-price">$750</span></button>
         <button class="menu-item" data-action="drive"><span class="menu-item-title">SPAWN / DRIVE OWNED</span><span class="menu-item-sub">Closest owned vehicle or a fresh one.</span></button>
@@ -201,12 +204,12 @@ export class Menu {
 
   showSafehouse(save, slots, onAction) {
     const rows = slots.map((s) => `<div class="menu-slot">
-      <span>SLOT ${s.index}${s.index === save.activeSlot ? ' · ACTIVE' : ''}<small>${s.exists ? `${money(s.money)} · ${s.missionsDone} jobs · story ${s.storyStep}/4` : 'EMPTY'}</small></span>
+      <span>SLOT ${s.index}${s.index === save.activeSlot ? ' · ACTIVE' : ''}<small>${s.exists ? `${money(s.money)} · ${s.missionsDone} jobs · story ${s.storyStep}/${STORY_TOTAL}` : 'EMPTY'}</small></span>
       <button data-action="save-${s.index}">SAVE</button>
       <button data-action="load-${s.index}">LOAD</button>
     </div>`).join('');
     this._show('SAFEHOUSE', `
-      <div class="menu-wallet">WALLET ${money(save.money)} · HP ${Math.round(save.hp)} · ARMOR ${Math.round(save.armor)}</div>
+      <div class="menu-wallet">WALLET ${money(save.money)} · HP ${Math.round(save.hp ?? 100)} · ARMOR ${Math.round(save.armor || 0)}</div>
       <button class="menu-primary" data-action="rest">REST — FULL HEAL</button>
       <div class="menu-label">SAVE SLOTS</div>
       ${rows}

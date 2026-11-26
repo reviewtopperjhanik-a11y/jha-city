@@ -38,7 +38,35 @@ export class GameAudio {
     this.hornCooldown = 0;
     this.nextNote = 0;
     this.step = 0;
+    // Phase 7: persisted sound preferences. The master gain is the single
+    // mute point; every synth voice (including radio notes) feeds it.
     this.enabled = true;
+    this.volume = 0.55;
+    this.engineFilter = null;
+    this._graphBuilt = false;
+  }
+
+  // Mute without tearing down the context: gain goes to zero immediately and
+  // no new voices are allocated while disabled. Re-enabling restores volume.
+  setEnabled(on) {
+    const next = !!on;
+    const wasEnabled = this.enabled;
+    this.enabled = next;
+    if (this.master) this.master.gain.value = next ? this.volume : 0;
+    if (!next) return;
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (wasEnabled === next && this._graphBuilt) return;
+    // Deferred graph creation keeps a muted session oscillator-free.
+    if (this.ctx) this._ensureGraph();
+    if (this.radioGain) this.radioGain.gain.value = this.radioIndex === 0 ? 0 : 0.7;
+  }
+
+  setVolume(v) {
+    const n = Number(v);
+    const volume = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : this.volume;
+    this.volume = volume;
+    if (this.master && this.enabled) this.master.gain.value = volume;
+    return volume;
   }
 
   get radioStation() {
@@ -69,6 +97,8 @@ export class GameAudio {
   }
 
   radioNote(time) {
+    // This path used to bypass the enabled flag; mute must be absolute.
+    if (!this.enabled) return false;
     const station = this.radioStation;
     if (!station.notes.length || !this.radioGain || !this.ctx) return false;
     const freq = station.notes[this.radioStep % station.notes.length];
@@ -90,14 +120,23 @@ export class GameAudio {
   unlock() {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.enabled) this._ensureGraph();
       return;
     }
-    const AC = window.AudioContext || window.webkitAudioContext;
+    const AC = typeof window !== 'undefined' ? window.AudioContext || window.webkitAudioContext : null;
     if (!AC) return;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = 0.55;
+    this.master.gain.value = this.enabled ? this.volume : 0;
     this.master.connect(this.ctx.destination);
+    if (this.enabled) this._ensureGraph();
+  }
+
+  // Built once, lazily: a sound-off session never allocates oscillators,
+  // buffers or persistent voices at all.
+  _ensureGraph() {
+    if (this._graphBuilt || !this.ctx || !this.master) return;
+    this._graphBuilt = true;
 
     const osc = this.ctx.createOscillator();
     osc.type = 'sawtooth';
@@ -251,7 +290,7 @@ export class GameAudio {
   }
 
   update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0, skid = 0 }) {
-    if (!this.ctx || !this.enabled) return;
+    if (!this.ctx || !this.enabled || !this._graphBuilt) return;
     const now = this.ctx.currentTime;
     this.hornCooldown = Math.max(0, this.hornCooldown - dt);
     if (this.rainGain) this.rainGain.gain.setTargetAtTime(rain * 0.05, now, 0.4);

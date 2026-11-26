@@ -16,6 +16,9 @@ export const ACHIEVEMENTS = [
 ];
 
 const BY_KEY = new Map(ACHIEVEMENTS.map((a) => [a.key, a]));
+// Older saves/harnesses use the four-chapter chain; main.js passes the live
+// chapter count once the extended story is installed.
+const STORY_TOTAL = 4;
 
 export class Achievements {
   constructor(save, { toast = () => {}, onChange = () => {} } = {}) {
@@ -54,7 +57,15 @@ export class Achievements {
   }
 
   update(dt, ctx = {}) {
-    const { player, hours = 0, wanted = 0, weather = 0, missionsDone = 0, storyStep = 0 } = ctx;
+    const {
+      player,
+      hours = 0,
+      wanted = 0,
+      weather = 0,
+      missionsDone = 0,
+      storyStep = 0,
+      storyTotal = STORY_TOTAL,
+    } = ctx;
     const driving = !!(player?.vehicle);
     const speed = player?.speed || 0;
 
@@ -62,7 +73,7 @@ export class Achievements {
     if (driving && weather >= 0.8) this.unlock('wet');
     if (driving && (hours >= 0 && hours < 5)) this.unlock('night');
     if (missionsDone > 0) this.unlock('firstJob');
-    if (storyStep >= 4) this.unlock('story');
+    if (storyStep >= Math.max(STORY_TOTAL, storyTotal)) this.unlock('story');
     if (this.highestStars >= 5 && wanted === 0) {
       this.unlock('clean');
       this.highestStars = 0;

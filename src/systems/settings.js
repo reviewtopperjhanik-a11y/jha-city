@@ -9,9 +9,24 @@ const TIERS = [
 ];
 const MODES = ['auto', 'high', 'medium', 'low'];
 const DAY_LENGTHS = [5, 10, 20, 40];
+const FPS_CAPS = [0, 30, 60];
+const STEERING_MODES = ['joystick', 'tilt', 'drag'];
+const STORY_TOTAL = 5;
 
 export class Settings {
-  constructor(root, look, save, { isMobile = false, toast = () => {}, onSaveSlot = () => {}, onLoadSlot = () => {}, onLook = () => {}, onEditHud = () => {}, onQuality = () => {} } = {}) {
+  constructor(root, look, save, {
+    isMobile = false,
+    toast = () => {},
+    onSaveSlot = () => {},
+    onLoadSlot = () => {},
+    onLook = () => {},
+    onEditHud = () => {},
+    onQuality = () => {},
+    onFpsCap = () => {},
+    onSound = () => {},
+    onVibration = () => {},
+    onSteering = () => {},
+  } = {}) {
     this.look = look;
     this.save = save;
     this.toast = toast;
@@ -20,12 +35,20 @@ export class Settings {
     this.onLook = onLook;
     this.onEditHud = onEditHud;
     this.onQuality = onQuality;
+    this.onFpsCap = onFpsCap;
+    this.onSound = onSound;
+    this.onVibration = onVibration;
+    this.onSteering = onSteering;
     this.mode = MODES.includes(save.quality) ? save.quality : 'auto';
     const fallbackTier = isMobile ? 1 : 0;
     this.autoTier = clamp(Number.isFinite(save.autoTier) ? Math.round(save.autoTier) : fallbackTier, 0, 2);
     this.showFps = save.showFps !== false;
     this.dayLength = DAY_LENGTHS.includes(Number(save.dayLength)) ? Number(save.dayLength) : 10;
     this.autoAim = save.autoAim !== false;
+    this.fpsCap = FPS_CAPS.includes(Number(save.fpsCap)) ? Number(save.fpsCap) : 0;
+    this.sound = save.sound !== false;
+    this.vibration = save.vibration !== false;
+    this.steering = STEERING_MODES.includes(save.steering) ? save.steering : 'joystick';
     this.isOpen = false;
     this.fpsSmooth = 60;
     this.fpsTimer = 0;
@@ -56,6 +79,10 @@ export class Settings {
         <button class="settings-toggle" id="edit-hud-button">EDIT HUD</button>
         <button class="settings-toggle" id="day-length-button">DAY LENGTH: 10 MIN</button>
         <button class="settings-toggle" id="auto-aim-button">AUTO-AIM: ON</button>
+        <button class="settings-toggle" id="fps-cap-button">FPS CAP: OFF</button>
+        <button class="settings-toggle" id="sound-button">SOUND: ON</button>
+        <button class="settings-toggle" id="vibration-button">VIBRATION: ON</button>
+        <button class="settings-toggle" id="steering-button">STEERING: JOYSTICK</button>
         <div class="settings-stat" id="settings-stat">60 FPS · AUTO · MEDIUM</div>
         <div class="settings-tip">Settings are saved automatically.</div>
         <div class="settings-label" style="padding-top:10px">SAVE SLOTS</div>
@@ -71,6 +98,10 @@ export class Settings {
     this.editHudButton = this.overlay.querySelector('#edit-hud-button');
     this.dayLengthButton = this.overlay.querySelector('#day-length-button');
     this.autoAimButton = this.overlay.querySelector('#auto-aim-button');
+    this.fpsCapButton = this.overlay.querySelector('#fps-cap-button');
+    this.soundButton = this.overlay.querySelector('#sound-button');
+    this.vibrationButton = this.overlay.querySelector('#vibration-button');
+    this.steeringButton = this.overlay.querySelector('#steering-button');
     this.qualityButtons = [...this.overlay.querySelectorAll('.quality-btn')];
     this.overlay.querySelector('.settings-close').addEventListener('click', () => this.close());
 
@@ -106,6 +137,26 @@ export class Settings {
       this._apply();
       this.toast(`AUTO-AIM: ${this.autoAim ? 'ON' : 'OFF'}`);
     });
+    this.fpsCapButton.addEventListener('click', () => {
+      this.fpsCap = FPS_CAPS[(FPS_CAPS.indexOf(this.fpsCap) + 1) % FPS_CAPS.length];
+      this._apply();
+      this.toast(`FPS CAP: ${this.fpsCap || 'OFF'}`);
+    });
+    this.soundButton.addEventListener('click', () => {
+      this.sound = !this.sound;
+      this._apply();
+      this.toast(`SOUND: ${this.sound ? 'ON' : 'OFF'}`);
+    });
+    this.vibrationButton.addEventListener('click', () => {
+      this.vibration = !this.vibration;
+      this._apply();
+      this.toast(`VIBRATION: ${this.vibration ? 'ON' : 'OFF'}`);
+    });
+    this.steeringButton.addEventListener('click', () => {
+      this.steering = STEERING_MODES[(STEERING_MODES.indexOf(this.steering) + 1) % STEERING_MODES.length];
+      this._apply();
+      this.toast(`STEERING: ${this.steering.toUpperCase()}`);
+    });
     this._renderSlots();
 
     this._apply();
@@ -118,7 +169,7 @@ export class Settings {
     const slots = listSlots();
     this.slotRow.innerHTML = slots.map((s) => `
       <div class="slot-item ${s.index === active ? 'active' : ''}">
-        <span>S${s.index}<small>${s.exists ? `$${s.money} · ${s.storyStep}/4` : 'EMPTY'}</small></span>
+        <span>S${s.index}<small>${s.exists ? `$${s.money} · ${s.storyStep}/${STORY_TOTAL}` : 'EMPTY'}</small></span>
         <button data-slot="save-${s.index}">SAVE</button>
         <button data-slot="load-${s.index}">LOAD</button>
       </div>`).join('');
@@ -128,6 +179,7 @@ export class Settings {
         const slot = Number(index);
         if (action === 'save') {
           saveSlot(slot, this.save);
+          this.onSaveSlot(slot);
           this.toast(`SLOT ${slot} SAVED`);
           this._renderSlots();
         } else {
@@ -158,6 +210,14 @@ export class Settings {
     this.save.showFps = this.showFps;
     this.save.dayLength = this.dayLength;
     this.save.autoAim = this.autoAim;
+    this.save.fpsCap = this.fpsCap;
+    this.save.sound = this.sound;
+    this.save.vibration = this.vibration;
+    this.save.steering = this.steering;
+    this.onFpsCap(this.fpsCap);
+    this.onSound(this.sound);
+    this.onVibration(this.vibration);
+    this.onSteering(this.steering);
 
     for (const btn of this.qualityButtons) {
       const on = btn.dataset.mode === this.mode;
@@ -169,6 +229,14 @@ export class Settings {
     this.dayLengthButton.classList.toggle('active', this.dayLength !== 10);
     this.autoAimButton.textContent = `AUTO-AIM: ${this.autoAim ? 'ON' : 'OFF'}`;
     this.autoAimButton.classList.toggle('active', this.autoAim);
+    this.fpsCapButton.textContent = `FPS CAP: ${this.fpsCap || 'OFF'}`;
+    this.fpsCapButton.classList.toggle('active', this.fpsCap > 0);
+    this.soundButton.textContent = `SOUND: ${this.sound ? 'ON' : 'OFF'}`;
+    this.soundButton.classList.toggle('active', this.sound);
+    this.vibrationButton.textContent = `VIBRATION: ${this.vibration ? 'ON' : 'OFF'}`;
+    this.vibrationButton.classList.toggle('active', this.vibration);
+    this.steeringButton.textContent = `STEERING: ${this.steering.toUpperCase()}`;
+    this.steeringButton.classList.toggle('active', this.steering !== 'joystick');
     if (this.fpsEl) this.fpsEl.style.display = this.showFps ? 'block' : 'none';
     this._renderFps();
     saveGame(this.save, true);
@@ -183,7 +251,29 @@ export class Settings {
       this.fpsEl.classList.toggle('warn', this.fpsSmooth < 45 && this.fpsSmooth >= 28);
       this.fpsEl.classList.toggle('bad', this.fpsSmooth < 28);
     }
-    if (this.stat) this.stat.textContent = text;
+    if (this.stat) {
+      const mem = typeof performance !== 'undefined' ? performance.memory?.usedJSHeapSize : 0;
+      this.stat.textContent = mem ? `${text} · ${Math.round(mem / 1048576)} MB` : text;
+    }
+  }
+
+  // Called after a slot load so the panel and all callback consumers follow the save.
+  syncFromSave() {
+    const s = this.save;
+    this.mode = MODES.includes(s.quality) ? s.quality : 'auto';
+    const fallbackTier = 1;
+    this.autoTier = clamp(Number.isFinite(s.autoTier) ? Math.round(s.autoTier) : fallbackTier, 0, 2);
+    this.showFps = s.showFps !== false;
+    this.dayLength = DAY_LENGTHS.includes(Number(s.dayLength)) ? Number(s.dayLength) : 10;
+    this.autoAim = s.autoAim !== false;
+    this.fpsCap = FPS_CAPS.includes(Number(s.fpsCap)) ? Number(s.fpsCap) : 0;
+    this.sound = s.sound !== false;
+    this.vibration = s.vibration !== false;
+    this.steering = STEERING_MODES.includes(s.steering) ? s.steering : 'joystick';
+    this.lowTime = 0;
+    this.highTime = 0;
+    this.cooldown = 2;
+    this._apply();
   }
 
   setMode(mode) {
