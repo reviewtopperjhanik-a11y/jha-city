@@ -424,3 +424,13 @@
   .edit-row, .edit-actions { gap: 4px; }
   .edit-actions { padding-top: 6px; }
 }
+
+/* Compact layout for narrow phones so the joystick and the action cluster
+   never overflow the viewport or push each other off screen. */
+@media (max-width: 420px) {
+  #hud { padding: 8px; }
+  .stick-base { width: 96px; height: 96px; min-width: 96px; min-height: 96px; }
+  .touch-right { gap: 8px; }
+  .touch-right .row { gap: 8px; }
+  #zone-tl .minimap-wrap, .vitals { min-width: 84px; width: min(24vh, 96px); }
+}
