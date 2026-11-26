@@ -15,17 +15,25 @@ const nowMs = () => (typeof performance !== 'undefined' && performance.now
   ? performance.now()
   : Date.now());
 
-const normalizeStyle = (style) => {
-  const s = typeof style === 'string' ? style.toUpperCase() : '';
-  return HAPTIC_STYLES[s] || HAPTIC_STYLES.MEDIUM;
+const clamp01 = (value, fallback = 0) => {
+  const n = Number(value);
+  if (Number.isNaN(n)) return fallback;
+  if (n === Infinity) return 1;
+  if (n === -Infinity) return 0;
+  return Math.max(0, Math.min(1, n));
 };
 
 const collisionStyle = (strength) => {
-  const n = Number(strength);
-  const value = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  const value = clamp01(strength);
   if (value < 0.35) return HAPTIC_STYLES.LIGHT;
   if (value < 0.7) return HAPTIC_STYLES.MEDIUM;
   return HAPTIC_STYLES.HEAVY;
+};
+
+const normalizeStyle = (style) => {
+  if (typeof style === 'number') return collisionStyle(style);
+  const s = typeof style === 'string' ? style.toUpperCase() : '';
+  return HAPTIC_STYLES[s] || HAPTIC_STYLES.MEDIUM;
 };
 
 /**
@@ -98,17 +106,21 @@ export function createHaptics({ plugin = null, enabled = true } = {}) {
       return on;
     },
 
-    shot(id = 'pistol') {
+    // Optional intensity (0..1) overrides the weapon's default style. Values
+    // outside the range never reach the native bridge.
+    shot(id = 'pistol', intensity = null) {
       const kind = typeof id === 'string' ? id : 'pistol';
+      const style = intensity === null || intensity === undefined
+        ? (kind === 'shotgun' ? HAPTIC_STYLES.HEAVY
+          : kind === 'smg' ? HAPTIC_STYLES.LIGHT : HAPTIC_STYLES.MEDIUM)
+        : collisionStyle(intensity);
       const t = nowMs();
       if (kind === 'smg') {
         if (t - lastSmg < SMG_MIN_INTERVAL) return false;
         lastSmg = t;
-        return invoke('impact', [{ style: HAPTIC_STYLES.LIGHT }]);
+        return invoke('impact', [{ style }]);
       }
-      return invoke('impact', [{
-        style: kind === 'shotgun' ? HAPTIC_STYLES.HEAVY : HAPTIC_STYLES.MEDIUM,
-      }]);
+      return invoke('impact', [{ style }]);
     },
 
     hit() {
@@ -122,6 +134,8 @@ export function createHaptics({ plugin = null, enabled = true } = {}) {
       return invoke('impact', [{ style: collisionStyle(strength01) }]);
     },
 
+    // A numeric argument is treated as a 0..1 intensity; strings keep the
+    // existing LIGHT/MEDIUM/HEAVY contract.
     impact(style = 'MEDIUM') {
       return invoke('impact', [{ style: normalizeStyle(style) }]);
     },

@@ -84,6 +84,8 @@ export class Hud {
     this.autoSprint = false;
     this.editing = false;
     this.selected = null;
+    this._drag = null;
+    this._modeBeforeEdit = null;
     this.layout = loadLayout();
     this.toastTimer = 0;
     this.damageTimer = 0;
@@ -310,6 +312,9 @@ export class Hud {
 
   setMode(mode, { nitro = this.nitro, autoSprint = this.autoSprint } = {}) {
     if (!MODES.includes(mode)) mode = 'foot';
+    // The game loop keeps reporting "menu" while Settings is open; freezing
+    // the mode keeps the draggable buttons on screen for the whole edit session.
+    if (this.editing) return;
     this.nitro = nitro;
     this.autoSprint = autoSprint;
     // NITRO only needs a two-state check; avoid touching DOM every frame.
@@ -357,6 +362,13 @@ export class Hud {
     const settings = this.el.querySelector('#hud-settings');
     if (settings) settings.hidden = mode === 'photo'; // CSS hides it too; keeps overlap checks honest
     if (mode === 'photo') this.arrow.hidden = true;
+    // Input keeps its own label overrides; let it retarget them to whichever
+    // toggle is visible after a mode swap (e.g. GUN -> HOLSTER).
+    if (!this._verifying && typeof window !== 'undefined' && window.CustomEvent) {
+      this.el.dispatchEvent(new window.CustomEvent('jha:hudmode', {
+        bubbles: true, detail: { mode },
+      }));
+    }
   }
 
   setPhoto(on) {
@@ -668,32 +680,61 @@ export class Hud {
       this.toast('HUD LAYOUT SAVED');
     });
 
+    // The scrim is transparent to pointers now, so Escape is the reliable
+    // keyboard way out (the ✕ button stays the touch way out).
+    window.addEventListener('keydown', (e) => {
+      if (this.editing && e.code === 'Escape') this.closeEdit();
+    });
+
     for (const btn of [...this.buttons.values(), this.el.querySelector('#hud-settings')]) {
       btn.addEventListener('pointerdown', (e) => this._beginDrag(e, btn));
     }
   }
 
   _beginDrag(e, btn) {
-    if (!this.editing) return;
+    if (!this.editing || this._drag) return;
+    // Ignore extra touches and non-primary mouse buttons: one drag at a time.
+    if (e.pointerType === 'mouse' && typeof e.button === 'number' && e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation();
+    e.stopPropagation(); // never let the HUD/camera look-drag steal this touch
     this._select(btn);
     const id = btn.dataset.id || (btn.id === 'hud-settings' ? 'menu' : 'photoExit');
     const start = this.layout.offsets[id] || [0, 0];
     const origin = { x: e.clientX, y: e.clientY, dx: start[0], dy: start[1] };
+    const pointerId = e.pointerId;
+    let captured = false;
+    let finished = false;
+    // Pointer capture keeps touch drags alive when the finger slides off the
+    // small button. Captured events still bubble to window, so the listeners
+    // below remain the single source of truth (and work in stub harnesses).
+    if (pointerId !== undefined && typeof btn.setPointerCapture === 'function') {
+      try { btn.setPointerCapture(pointerId); captured = true; } catch { captured = false; }
+    }
+    const samePointer = (ev) => !ev || pointerId === undefined || ev.pointerId === undefined
+      || ev.pointerId === pointerId;
     const move = (ev) => {
+      if (finished || !samePointer(ev)) return;
       this.layout.offsets[id] = [
         snap(origin.dx + ev.clientX - origin.x),
         snap(origin.dy + ev.clientY - origin.y),
       ];
       this._applyLayout();
     };
-    const end = () => {
+    const end = (ev) => {
+      if (finished || !samePointer(ev)) return;
+      finished = true;
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', end);
       window.removeEventListener('pointercancel', end);
+      btn.removeEventListener('lostpointercapture', end);
+      if (captured && typeof btn.releasePointerCapture === 'function') {
+        try { btn.releasePointerCapture(pointerId); } catch { /* capture already gone */ }
+      }
+      this._drag = null;
       this.checkOverlaps();
     };
+    this._drag = { id, pointerId, btn, end };
+    btn.addEventListener('lostpointercapture', end);
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', end);
     window.addEventListener('pointercancel', end);
@@ -712,12 +753,12 @@ export class Hud {
 
   applyPreset(name) {
     if (!PRESETS.includes(name)) return;
+    // Selecting the already-active preset must not erase hand-dragged offsets;
+    // only a real preset switch starts from the preset's own layout.
+    const changed = this.layout.preset !== name;
     this.layout.preset = name;
-    this.layout.offsets = {};
-    for (const btn of this.editOverlay.querySelectorAll('[data-preset]')) {
-      btn.classList.toggle('active', btn.dataset.preset === name);
-    }
-    if (name === 'claw') {
+    if (changed) this.layout.offsets = {};
+    if (changed && name === 'claw') {
       const rise = -(typeof window !== 'undefined' ? Math.round(window.innerHeight / 2) : 180);
       this.layout.offsets.nitro = [0, rise];
       this.layout.offsets.fire = [0, rise];
@@ -729,6 +770,9 @@ export class Hud {
   _applyLayout() {
     const preset = PRESETS.includes(this.layout.preset) ? this.layout.preset : 'right';
     this.el.classList.toggle('preset-left', preset === 'left');
+    for (const btn of this.editOverlay.querySelectorAll('[data-preset]')) {
+      btn.classList.toggle('active', btn.dataset.preset === preset);
+    }
     for (const btn of this.buttons.values()) {
       const id = btn.dataset.id;
       const [dx = 0, dy = 0] = this.layout.offsets[id] || [0, 0];
@@ -755,21 +799,36 @@ export class Hud {
 
   openEdit() {
     if (this.editing) return;
+    this._modeBeforeEdit = {
+      mode: this.mode, nitro: this.nitro, autoSprint: this.autoSprint,
+    };
+    // Settings/photo modes hide the BR buttons; show a workable drag set
+    // before freezing the mode below.
+    if (this.mode === 'menu' || this.mode === 'photo') {
+      this.setMode('foot', { nitro: 100, autoSprint: false });
+    }
     this.editing = true;
     this.el.classList.add('editing');
     this.root.dataset.editing = '1';
     this.editOverlay.classList.add('open');
     this.editOverlay.setAttribute('aria-hidden', 'false');
-    this.applyPreset(this.layout.preset);
+    // Re-apply the saved layout only: applyPreset() here used to wipe every
+    // drag offset as soon as the editor opened.
+    this._applyLayout();
   }
 
   closeEdit() {
     if (!this.editing) return;
+    if (this._drag && typeof this._drag.end === 'function') this._drag.end();
     this.editing = false;
+    this._drag = null;
     this.el.classList.remove('editing');
     delete this.root.dataset.editing;
     this.editOverlay.classList.remove('open');
     this.editOverlay.setAttribute('aria-hidden', 'true');
+    const saved = this._modeBeforeEdit;
+    this._modeBeforeEdit = null;
+    if (saved) this.setMode(saved.mode, { nitro: saved.nitro, autoSprint: saved.autoSprint });
   }
 
   // Slot saves carry the layout too; localStorage stays as the legacy cache.

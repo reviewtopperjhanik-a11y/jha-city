@@ -411,6 +411,29 @@ export class Vehicle {
     return true;
   }
 
+  // Pool hand-off: a despawned cruiser/traffic car returns to service clean.
+  // Geometry, materials and the shared FX pools are never rebuilt, so an AUTO
+  // quality flip or a wanted-level change cannot cause a mesh-allocation spike.
+  resetForPool(role = 'parked') {
+    this.ai = false;
+    this.role = role;
+    this.speed = 0;
+    this.health = this.maxHealth;
+    this.boost = 100;
+    this.exploded = false;
+    this.blocked = false;
+    this.stuckTime = 0;
+    this.recoverCooldown = 0;
+    this.accidentCooldown = 0;
+    this._damageFxTimer = 0;
+    this.yieldToPlayer = false;
+    this.honkBoost = 0;
+    this.laneOffset = null;
+    this.mesh.rotation.set(0, this.heading, 0);
+    this._sync(0);
+    return this;
+  }
+
   // Save/garage descriptor. Price is metadata only and never drives physics.
   descriptor(price = 0) {
     return {

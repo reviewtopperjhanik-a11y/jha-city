@@ -9,6 +9,10 @@ const PHASES = [
   { key: 'ew', ns: LIT[0], ew: LIT[2], time: 10 },
   { key: 'ew-y', ns: LIT[0], ew: LIT[1], time: 2.4 },
 ];
+const CYCLE_TIME = PHASES.reduce((sum, phase) => sum + phase.time, 0);
+// A backgrounded tab can hand us a multi-second dt. Never let it bank up a
+// negative timer that would fast-forward the whole city on the next frame.
+const MAX_STEP = 0.25;
 const APPROACHES = [
   { ox: -11, oz: -11, ry: 0, axis: 'z' },
   { ox: 11, oz: 11, ry: Math.PI, axis: 'z' },
@@ -21,7 +25,7 @@ const APPROACHES = [
 export class TrafficLights {
   constructor(scene, look, world, callbacks = {}) {
     this.world = world;
-    this.onChange = callbacks.change || (() => {});
+    this.onChange = typeof callbacks.change === 'function' ? callbacks.change : (() => {});
     this.phaseIndex = 0;
     this.timer = PHASES[0].time;
     this.heads = [];
@@ -81,6 +85,10 @@ export class TrafficLights {
     return PHASES[this.phaseIndex];
   }
 
+  get remaining() {
+    return Number.isFinite(this.timer) ? this.timer : PHASES[0].time;
+  }
+
   _applyColors() {
     const p = this.phase;
     const color = new THREE.Color();
@@ -96,10 +104,20 @@ export class TrafficLights {
   }
 
   update(dt) {
-    this.timer -= dt;
+    const raw = Number(dt);
+    const step = Number.isFinite(raw) ? Math.max(0, Math.min(raw, MAX_STEP)) : 0;
+    if (!Number.isFinite(this.timer)) this.timer = PHASES[0].time;
+    this.timer = clamp(this.timer, -CYCLE_TIME, CYCLE_TIME);
+    this.timer -= step;
     if (this.timer > 0) return;
-    this.phaseIndex = (this.phaseIndex + 1) % PHASES.length;
-    this.timer += PHASES[this.phaseIndex].time;
+
+    let advanced = 0;
+    while (this.timer <= 0 && advanced < PHASES.length) {
+      this.phaseIndex = (this.phaseIndex + 1) % PHASES.length;
+      this.timer += PHASES[this.phaseIndex].time;
+      advanced++;
+    }
+    if (this.timer <= 0) this.timer = PHASES[this.phaseIndex].time;
     this._applyColors();
     this.onChange(this.phase.key);
   }

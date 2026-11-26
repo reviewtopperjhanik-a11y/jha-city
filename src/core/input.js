@@ -56,6 +56,10 @@ export class Input {
     this.padNext = {};
     this.padPrev = {};
     this.holdTimers = new Map();
+    // pointerId -> button, so a release outside the button still lands on the
+    // right action (and simultaneous touches never cancel each other).
+    this.pointerButtons = new Map();
+    this.labels = new Map();
     for (const [, action] of PAD_BUTTONS) {
       this.padNext[action] = false;
       this.padPrev[action] = false;
@@ -71,6 +75,14 @@ export class Input {
   setBlocked(on) {
     this.blocked = !!on;
     if (!this.blocked) return this.blocked;
+    this._clearHeldState();
+    return this.blocked;
+  }
+
+  // One neutralising path for blocking, window blur and tab hiding: held
+  // actions, pending hold timers and visual "down" state can never survive a
+  // lost focus. The pooled result objects are reset in place.
+  _clearHeldState() {
     this.keys = {};
     this.held = {};
     this.pressed = {};
@@ -82,6 +94,7 @@ export class Input {
     this.stick.y = 0;
     this.stick.active = false;
     this.stick.id = null;
+    this.pointerButtons.clear();
     if (this.knob) this.knob.style.transform = 'translate(0, 0)';
     for (const [, action] of PAD_BUTTONS) {
       this.padPrev[action] = false;
@@ -106,7 +119,6 @@ export class Input {
     drive.steer = 0;
     drive.handbrake = false;
     drive.boost = false;
-    return this.blocked;
   }
 
   _build(root) {
@@ -131,8 +143,22 @@ export class Input {
   }
 
   setButtonLabel(action, label) {
-    const btn = this.buttons.find((b) => b.dataset.action === action);
-    if (btn && btn.textContent !== label) btn.textContent = label;
+    if (!action) return null;
+    const text = String(label ?? '').trim();
+    this.labels.set(action, text);
+    // Two buttons share data-action="armed" (GUN / HOLSTER): always retarget
+    // the visible one, then remember it for the next HUD mode swap.
+    const btn = this.buttons.find((b) => b.dataset.action === action && !b.hidden)
+      || this.buttons.find((b) => b.dataset.action === action);
+    if (btn && btn.textContent !== text) btn.textContent = text;
+    return btn || null;
+  }
+
+  _applyLabels() {
+    for (const [action, text] of this.labels) {
+      const btn = this.buttons.find((b) => b.dataset.action === action && !b.hidden);
+      if (btn && btn.textContent !== text) btn.textContent = text;
+    }
   }
 
   // Programmatic presses share the same edge detection as touch and keyboard.
@@ -158,10 +184,14 @@ export class Input {
       const a = KEY_ACTIONS[e.code];
       if (a) this.held[a] = false;
     });
-    window.addEventListener('blur', () => {
-      this.keys = {};
-      this.held = {};
-    });
+    window.addEventListener('blur', () => this._clearHeldState());
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') this._clearHeldState();
+      });
+    }
+    // HUD mode swaps can reveal a different button for the same action.
+    this.root.addEventListener('jha:hudmode', () => this._applyLabels());
 
     const moveStick = (e) => {
       const r = this.base.getBoundingClientRect();
@@ -196,35 +226,50 @@ export class Input {
     this.base.addEventListener('pointerup', releaseStick);
     this.base.addEventListener('pointercancel', releaseStick);
 
-    // Delegation means HUD buttons can be replaced or moved freely.
+    // Delegation means HUD buttons can be replaced or moved freely. Pointer
+    // capture keeps the hold/release tied to the finger that started it, even
+    // if it slides off the 44-90px target or another touch lands elsewhere.
     this.root.addEventListener('pointerdown', (e) => {
       if (this.blocked || this.root.dataset.editing === '1') return;
       const btn = e.target.closest?.('[data-action]');
       if (!btn || btn.hidden) return;
+      const pointerId = e.pointerId;
+      if (pointerId !== undefined && this.pointerButtons.has(pointerId)) return;
       e.preventDefault();
+      if (pointerId !== undefined && typeof btn.setPointerCapture === 'function') {
+        try { btn.setPointerCapture(pointerId); } catch { /* capture is optional */ }
+      }
+      const key = pointerId !== undefined ? `p${pointerId}` : btn;
+      if (pointerId !== undefined) this.pointerButtons.set(pointerId, btn);
       const action = btn.dataset.action;
       this.press(action);
       btn.classList.add('down');
       const holdAction = btn.dataset.holdAction;
       if (holdAction) {
         const timer = window.setTimeout(() => {
-          this.holdTimers.delete(btn);
+          if (this.holdTimers.get(key) !== timer) return; // released meanwhile
+          this.holdTimers.delete(key);
           btn.dataset.held = '1';
           this.press(holdAction);
         }, 450);
-        this.holdTimers.set(btn, timer);
+        this.holdTimers.set(key, timer);
       }
     });
     const releaseButton = (e) => {
-      const btn = e.target.closest?.('[data-action]');
+      const pointerId = e?.pointerId;
+      const tracked = pointerId !== undefined ? this.pointerButtons.get(pointerId) : null;
+      const btn = tracked || e?.target?.closest?.('[data-action]');
       if (!btn) return;
-      const timer = this.holdTimers.get(btn);
+      const key = pointerId !== undefined ? `p${pointerId}` : btn;
+      if (pointerId !== undefined) this.pointerButtons.delete(pointerId);
+      const timer = this.holdTimers.get(key);
       if (timer !== undefined) {
         window.clearTimeout(timer);
-        this.holdTimers.delete(btn);
+        this.holdTimers.delete(key);
       }
-      const action = btn.dataset.action;
-      this.held[action] = false;
+      this.held[btn.dataset.action] = false;
+      const otherPointer = [...this.pointerButtons.values()].includes(btn);
+      if (otherPointer) return; // a second finger still holds this same button
       btn.classList.remove('down');
       if (btn.dataset.held === '1') {
         this.held[btn.dataset.holdAction] = false;

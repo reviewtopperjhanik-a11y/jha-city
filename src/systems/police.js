@@ -138,6 +138,11 @@ export class Police {
     this.cars = [];
     this.officers = [];
     this.roadblocks = [];
+    // Despawned cruisers, officers and barrier groups go back to fixed pools.
+    // AUTO quality and wanted-level changes never allocate or drop meshes.
+    this.unitPool = [];
+    this.officerPool = [];
+    this.roadblockPool = [];
     this.heli = null;
     this._audioState = { level: 0, pan: 0, heli: 0 };
     this.active = false;
@@ -146,6 +151,12 @@ export class Police {
     this.sirenTime = 0;
     this.arrestLock = 0;
     this.bustedFlag = false;
+    // Busts are a request, not an immediate world reset. The game layer owns
+    // the overlay and may consume this flag instead of the legacy callback.
+    // Death always wins: setPlayerDown(cancel pending requests) freezes all
+    // offensive police behaviour without tearing down the city or the pools.
+    this.bustedRequest = false;
+    this.playerDown = false;
 
     this.officerMat = new THREE.MeshToonMaterial({
       vertexColors: true,
@@ -189,8 +200,42 @@ export class Police {
     this.lowQuality = !!isLow;
   }
 
+  // Death priority: the game layer flips this on the first fatal frame (or the
+  // class detects player.isDown() itself). Offensive shots and arrests stop,
+  // but the chase pool and the city are left exactly where they were.
+  setPlayerDown(down = true) {
+    this.playerDown = !!down;
+    if (this.playerDown) {
+      this.bustedRequest = false;
+      this.bustedFlag = true;
+      this.arrestLock = Math.max(this.arrestLock, 4);
+    } else {
+      this.bustedFlag = false;
+      this.arrestLock = 0;
+    }
+    return this.playerDown;
+  }
+
+  // Optional pull-style bridge for main.js. When a callback is installed the
+  // legacy onBusted path still works; this flag lets one owner consume the
+  // request without ever showing a second overlay.
+  consumeBustedRequest() {
+    const request = this.bustedRequest;
+    this.bustedRequest = false;
+    return request;
+  }
+
   update(dt, player, wanted, time) {
     this.arrestLock = Math.max(0, this.arrestLock - dt);
+    const down = this.playerDown
+      || !!(player && typeof player.isDown === 'function' && player.isDown());
+    if (down) {
+      // Keep FX timers and sirens ticking so the screen does not freeze, but
+      // never advance a pursuit or fire another shot at a downed player.
+      this._decayTracers(dt);
+      this._flashLights();
+      return;
+    }
     const stars = wanted.stars;
 
     if (stars <= 0) {
@@ -215,7 +260,9 @@ export class Police {
       this.spawnDelay = this.lowQuality ? 2.1 : (stars >= 4 ? 0.9 : 1.35);
     }
     // LOW keeps surplus units in the pool for when quality rises again.
-    if (!this.lowQuality) while (this.units.length > need) this._removeUnit(this.units.pop());
+    if (!this.lowQuality) {
+      while (this.units.length > need) this._removeUnit(this.units[this.units.length - 1]);
+    }
 
     this._decayTracers(dt);
     this._markUnits(player);
@@ -270,7 +317,7 @@ export class Police {
       for (let i = 0; i < this.units.length && this.activeUnits < cap; i++) {
         const v = this.units[i];
         if (v._phase3Marked) continue;
-        if (pass === 0 && dist2(v.pos.x, v.pos.z, px, pz) > 140 * 140) continue;
+        if (pass === 0 && dist2(v.pos.x, v.pos.z, px, pz) > 140) continue;
         v._phase3Marked = true;
         v._phase3Active = true;
         v.mesh.visible = true;
@@ -302,7 +349,7 @@ export class Police {
       for (let i = 0; i < this.officers.length && this.activeOfficers < cap; i++) {
         const o = this.officers[i];
         if (o._phase3Marked) continue;
-        if (pass === 0 && dist2(o.x, o.z, px, pz) > 60 * 60) continue;
+        if (pass === 0 && dist2(o.x, o.z, px, pz) > 60) continue;
         o._phase3Marked = true;
         o._phase3Active = true;
         o.group.visible = true;
@@ -337,12 +384,43 @@ export class Police {
     return best;
   }
 
+  // Mesh and blob shadow move into and out of the scene together. `v._pooled`
+  // makes the hand-off idempotent when clearAll and a roadblock teardown meet.
+  _showVehicle(v) {
+    if (!v || !v._pooled) return v;
+    this.scene.add(v.mesh);
+    if (v.shadow) this.scene.add(v.shadow);
+    v.setVisible(true);
+    v._pooled = false;
+    return v;
+  }
+
+  _hideVehicle(v) {
+    if (!v || v._pooled) return;
+    v.setVisible(false);
+    this.scene.remove(v.mesh);
+    if (v.shadow) this.scene.remove(v.shadow);
+    const i = this.cars.indexOf(v);
+    if (i >= 0) this.cars.splice(i, 1);
+    v._pooled = true;
+  }
+
   _spawnUnit(player) {
     const p = this._spawnPoint(player);
     const heading = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
-    const v = new Vehicle(this.scene, this.look, 'car', p.x, p.z, heading, C.ink);
+    let v = this.unitPool.pop();
+    if (v) {
+      v.pos.set(p.x, 0, p.z);
+      v.heading = wrapAngle(heading);
+      v.resetForPool('police');
+      this._showVehicle(v);
+    } else {
+      v = new Vehicle(this.scene, this.look, 'car', p.x, p.z, heading, C.ink);
+      v._pooled = false;
+    }
     v.role = 'police';
     v.ai = true;
+    v.roadblock = false;
     v.setPolice();
     v.stuckTime = 0;
     v.recoverCooldown = 0;
@@ -356,10 +434,10 @@ export class Police {
 
   _removeUnit(v) {
     if (!v) return;
-    v.setVisible(false);
-    this.scene.remove(v.mesh);
-    const i = this.cars.indexOf(v);
-    if (i >= 0) this.cars.splice(i, 1);
+    const i = this.units.indexOf(v);
+    if (i >= 0) this.units.splice(i, 1);
+    this._hideVehicle(v);
+    this.unitPool.push(v);
   }
 
   _updateUnits(dt, player, wanted, stars, time) {
@@ -460,49 +538,55 @@ export class Police {
     }
     if (!point) return null;
 
-    const group = new THREE.Group();
-    const body = new THREE.Mesh(this.officerBodyGeo, this.officerMat);
-    body.castShadow = true;
-    const legL = new THREE.Mesh(this.officerLegGeo, this.officerMat);
-    const legR = new THREE.Mesh(this.officerLegGeo, this.officerMat);
-    legL.castShadow = legR.castShadow = true;
-    legL.position.set(-0.16, 1.02, 0);
-    legR.position.set(0.16, 1.02, 0);
-    group.add(body, legL, legR);
-    group.position.set(point.x, 0, point.z);
-    group.rotation.y = player ? Math.atan2(player.pos.x - point.x, player.pos.z - point.z) : 0;
-    this.scene.add(group);
-
-    const officer = {
-      x: point.x,
-      z: point.z,
-      heading: group.rotation.y,
-      phase: rand(this.rng, 0, Math.PI * 2),
-      life: 0,
-      farTime: 0,
-      speed: 9.4 + this.rng() * 0.8,
-      owner,
-      group,
-      legL,
-      legR,
-      // Combat hook state; every shot reuses the shared tracer pool below.
-      hp: 100,
-      fireCooldown: 0.5 + this.rng() * 0.5,
-      tracer: null,
-      tracerLife: 0,
-    };
+    let officer = this.officerPool.pop();
+    if (officer) {
+      this.scene.add(officer.group);
+      officer.group.visible = true;
+      officer._pooled = false;
+    } else {
+      const group = new THREE.Group();
+      const body = new THREE.Mesh(this.officerBodyGeo, this.officerMat);
+      body.castShadow = true;
+      const legL = new THREE.Mesh(this.officerLegGeo, this.officerMat);
+      const legR = new THREE.Mesh(this.officerLegGeo, this.officerMat);
+      legL.castShadow = legR.castShadow = true;
+      legL.position.set(-0.16, 1.02, 0);
+      legR.position.set(0.16, 1.02, 0);
+      group.add(body, legL, legR);
+      this.scene.add(group);
+      officer = { group, legL, legR, _pooled: false };
+    }
+    officer.group.position.set(point.x, 0, point.z);
+    officer.group.rotation.y = player ? Math.atan2(player.pos.x - point.x, player.pos.z - point.z) : 0;
+    officer.x = point.x;
+    officer.z = point.z;
+    officer.heading = officer.group.rotation.y;
+    officer.phase = rand(this.rng, 0, Math.PI * 2);
+    officer.life = 0;
+    officer.farTime = 0;
+    officer.speed = 9.4 + this.rng() * 0.8;
+    officer.owner = owner;
+    // Combat hook state; every shot reuses the shared tracer pool below.
+    officer.hp = 100;
+    officer.fireCooldown = 0.5 + this.rng() * 0.5;
+    officer.tracer = null;
+    officer.tracerLife = 0;
+    officer.combatCooldown = 0;
     this.officers.push(officer);
     return officer;
   }
 
   _removeOfficer(o) {
+    if (!o || o._pooled) return;
     if (o.tracer) {
       o.tracer.visible = false;
       o.tracer = null;
     }
     this.scene.remove(o.group);
+    o._pooled = true;
     const i = this.officers.indexOf(o);
     if (i >= 0) this.officers.splice(i, 1);
+    this.officerPool.push(o);
   }
 
   // Combat hook: returns true only on the hit that takes the officer down.
@@ -535,7 +619,8 @@ export class Police {
   }
 
   _updateOfficers(dt, player, wanted) {
-    if (wanted.stars <= 0 || this.arrestLock > 0) return;
+    if (wanted.stars <= 0 || this.arrestLock > 0 || this.playerDown
+      || (player && typeof player.isDown === 'function' && player.isDown())) return;
     for (let i = this.officers.length - 1; i >= 0; i--) {
       const o = this.officers[i];
       if (o._phase3Active === false) continue;
@@ -548,7 +633,7 @@ export class Police {
       const clear = lineClear(this.world, o.x, o.z, player.pos.x, player.pos.z);
 
       if (clear && ((!pv && d < 2.05) || (pv && Math.abs(pv.speed) < 1.4 && d < 3.3))) {
-        this._arrest();
+        this._arrest(player);
         return;
       }
 
@@ -628,10 +713,12 @@ export class Police {
     }
   }
 
-  _arrest() {
-    if (this.bustedFlag || this.arrestLock > 0) return;
+  _arrest(player = null) {
+    if (this.bustedFlag || this.arrestLock > 0 || this.playerDown) return;
+    if (player && typeof player.isDown === 'function' && player.isDown()) return;
     this.bustedFlag = true;
     this.arrestLock = 4;
+    this.bustedRequest = true;
     this.onBusted();
   }
 
@@ -641,6 +728,7 @@ export class Police {
     for (let i = this.roadblocks.length - 1; i >= 0; i--) {
       const block = this.roadblocks[i];
       block.age += dt;
+      block.hitCooldown = Math.max(0, (block.hitCooldown || 0) - dt);
       const d = Math.hypot(player.pos.x - block.x, player.pos.z - block.z);
       block.farTime = d > 100 ? block.farTime + dt : 0;
       if (!block.announced && d < 62) {
@@ -681,26 +769,40 @@ export class Police {
     const ax = approachX / al;
     const az = approachZ / al;
 
-    const group = new THREE.Group();
+    let group = this.roadblockPool.pop();
+    if (group) {
+      this.scene.add(group);
+    } else {
+      group = new THREE.Group();
+      for (const off of [-5.4, 0, 5.4]) {
+        const base = new THREE.Mesh(this.barrierGeo, this.officerMat);
+        base.position.set(off, 0, 0);
+        base.castShadow = true;
+        const glow = new THREE.Mesh(this.barrierGlowGeo, this.barrierGlowMat);
+        glow.position.set(off, 0.93, 0);
+        group.add(base, glow);
+      }
+      this.scene.add(group);
+    }
     group.position.set(x, 0, z);
     group.rotation.y = axis === 'z' ? 0 : Math.PI / 2;
-    for (const off of [-5.4, 0, 5.4]) {
-      const base = new THREE.Mesh(this.barrierGeo, this.officerMat);
-      base.position.set(off, 0, 0);
-      base.castShadow = true;
-      const glow = new THREE.Mesh(this.barrierGlowGeo, this.barrierGlowMat);
-      glow.position.set(off, 0.93, 0);
-      group.add(base, glow);
-    }
-    this.scene.add(group);
 
     const far = Math.sign(axis === 'z' ? z - player.pos.z : x - player.pos.x) || 1;
     const cars = [];
     for (const side of [-5.1, 5.1]) {
       const cx = axis === 'z' ? x + side : x + far * 6;
       const cz = axis === 'z' ? z + far * 6 : z + side;
-      const heading = axis === 'z' ? Math.PI / 2 : 0;
-      const v = new Vehicle(this.scene, this.look, 'car', cx, cz, heading + side * 0.035, C.ink);
+      const heading = (axis === 'z' ? Math.PI / 2 : 0) + side * 0.035;
+      let v = this.unitPool.pop();
+      if (v) {
+        v.pos.set(cx, 0, cz);
+        v.heading = wrapAngle(heading);
+        v.resetForPool('police');
+        this._showVehicle(v);
+      } else {
+        v = new Vehicle(this.scene, this.look, 'car', cx, cz, heading, C.ink);
+        v._pooled = false;
+      }
       v.role = 'police';
       v.ai = false;
       v.setPolice();
@@ -727,7 +829,9 @@ export class Police {
       officers,
       age: 0,
       farTime: 0,
+      hitCooldown: 0,
       announced: false,
+      released: false,
       collider: axis === 'z'
         ? { x, z, hw: 8.8, hd: 0.8 }
         : { x, z, hw: 0.8, hd: 8.8 },
@@ -736,14 +840,15 @@ export class Police {
   }
 
   _removeRoadblock(block) {
+    if (!block || block.released) return;
+    block.released = true;
     for (const v of block.cars) {
-      v.setVisible(false);
-      this.scene.remove(v.mesh);
-      const i = this.cars.indexOf(v);
-      if (i >= 0) this.cars.splice(i, 1);
+      this._hideVehicle(v);
+      this.unitPool.push(v);
     }
     for (const o of block.officers) this._removeOfficer(o);
     this.scene.remove(block.group);
+    this.roadblockPool.push(block.group);
   }
 
   _updateHeli(dt, player, wanted, stars) {
@@ -903,8 +1008,11 @@ export class Police {
         pv.speed *= 0.7;
         v.speed *= 0.45;
         if (impact > 6) {
-          pv.health = Math.max(0, pv.health - impact * 0.09);
-          v.health = Math.max(0, v.health - impact * 0.05);
+          const resistance = pv.upgrades?.armor ? 0.55 : 1;
+          if (typeof pv.damage === 'function') pv.damage(impact * 0.09 * resistance);
+          else pv.health = Math.max(0, pv.health - impact * 0.09 * resistance);
+          if (typeof v.damage === 'function') v.damage(impact * 0.05);
+          else v.health = Math.max(0, v.health - impact * 0.05);
         }
         v._sync(0);
       }
@@ -944,9 +1052,23 @@ export class Police {
         player.pos.z = b.z + Math.sign(player.pos.z - b.z || 1) * (b.hd + radius);
       }
       if (pv) {
+        const impactSpeed = Math.abs(pv.speed);
         pv.pos.copy(player.pos);
-        pv.speed *= 0.25;
-        pv.health = Math.max(0, pv.health - 2);
+        pv.speed *= 0.18;
+        // A barrier is a one-off impact, not a 2-HP-per-frame drain while the
+        // car overlaps it. Cooldown also stops several contact frames from
+        // stacking damage into an instant death.
+        if (impactSpeed > 3 && block.hitCooldown <= 0) {
+          const raw = clamp(impactSpeed * 0.32, 6, 22) * (pv.upgrades?.armor ? 0.55 : 1);
+          if (typeof pv.damage === 'function') pv.damage(raw);
+          else pv.health = Math.max(0, pv.health - raw);
+          if (typeof player.damage === 'function' && impactSpeed > 11) {
+            player.damage(Math.min(8, (impactSpeed - 11) * 0.7), { x: block.x, z: block.z, valid: true });
+          }
+          block.hitCooldown = 0.7;
+          this.onToast('ROADBLOCK IMPACT');
+        }
+        if (typeof pv._sync === 'function') pv._sync(0);
       }
     }
   }
@@ -1053,24 +1175,28 @@ export class Police {
     for (let i = 0; i < this.tracers.length; i++) this.tracers[i].visible = false;
     this.muzzleFlash.visible = false;
     this.flashLife = 0;
-    for (const v of this.cars) {
-      v.setVisible(false);
-      this.scene.remove(v.mesh);
+    for (let i = this.roadblocks.length - 1; i >= 0; i--) this._removeRoadblock(this.roadblocks[i]);
+    this.roadblocks.length = 0;
+    for (let i = this.units.length - 1; i >= 0; i--) this._removeUnit(this.units[i]);
+    for (let i = this.cars.length - 1; i >= 0; i--) {
+      const v = this.cars[i];
+      this._hideVehicle(v);
+      this.unitPool.push(v);
     }
-    for (const o of this.officers) this.scene.remove(o.group);
-    for (const block of this.roadblocks) {
-      this.scene.remove(block.group);
-      for (const v of block.cars) this.scene.remove(v.mesh);
-    }
+    for (let i = this.officers.length - 1; i >= 0; i--) this._removeOfficer(this.officers[i]);
     this._removeHeli();
     this.units.length = 0;
     this.cars.length = 0;
     this.officers.length = 0;
-    this.roadblocks.length = 0;
     this.active = false;
+    this.activeUnits = 0;
+    this.activeOfficers = 0;
     this.spawnDelay = 0;
     this.roadblockCooldown = 0;
-    this.arrestLock = 0;
-    this.bustedFlag = false;
+    if (!this.playerDown) {
+      this.arrestLock = 0;
+      this.bustedFlag = false;
+      this.bustedRequest = false;
+    }
   }
 }

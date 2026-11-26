@@ -14,8 +14,13 @@ export class Wanted {
     this.searchRadius = 0;
     this.spotted = false;
     this.hidden = false;
+    // A downed player (dead or busted overlay) freezes heat without erasing
+    // stars. The game layer resumes or clears it when the overlay finishes.
+    this.suspended = false;
     this.onChange = () => {};
 
+    // Reused frame objects: police, minimap and HUD all read the same descriptors.
+    this._searchFrame = { x: 0, z: 0, r: 0 };
     this._senseTimer = 0;
     this._seen = false;
     this._senseStars = -1;
@@ -23,12 +28,18 @@ export class Wanted {
   }
 
   crime(amount = 1, time = 0, x = null, z = null) {
+    if (this.suspended) return this.stars;
     const before = this.stars;
     this.stars = Math.min(5, this.stars + amount);
     this.evade = 0;
     this.lastCrime = time;
     if (Number.isFinite(x) && Number.isFinite(z)) {
-      this.lastSeen = { x, z };
+      if (this.lastSeen) {
+        this.lastSeen.x = x;
+        this.lastSeen.z = z;
+      } else {
+        this.lastSeen = { x, z };
+      }
     } else if (!this.lastSeen) {
       this.lastSeen = { x: 0, z: 0 };
     }
@@ -82,7 +93,27 @@ export class Wanted {
     return this._seen;
   }
 
+  // Freeze decay and new crimes while a death/bust overlay is up. This is not
+  // clear(): stars, lastSeen and the search circle all survive for callers that
+  // need to restore the run, and no onChange callback is fired.
+  suspend(on = true) {
+    this.suspended = !!on;
+    if (this.suspended) {
+      this.spotted = false;
+      this._senseTimer = 0;
+    }
+    return this.suspended;
+  }
+
+  resume() {
+    return this.suspend(false);
+  }
+
   update(dt, player, police, time) {
+    if (this.suspended || (player && typeof player.isDown === 'function' && player.isDown())) {
+      this.spotted = false;
+      return;
+    }
     if (this.stars <= 0) {
       this.spotted = false;
       this.hidden = false;
@@ -97,7 +128,12 @@ export class Wanted {
 
     if (seen) {
       this.hidden = false;
-      this.lastSeen = { x: player.pos.x, z: player.pos.z };
+      if (this.lastSeen) {
+        this.lastSeen.x = player.pos.x;
+        this.lastSeen.z = player.pos.z;
+      } else {
+        this.lastSeen = { x: player.pos.x, z: player.pos.z };
+      }
       this.searchRadius = Math.max(48, 52 + this.stars * 15);
       this.evade = Math.max(0, this.evade - dt * 4);
       this.evadeNeed = this._need(player);
@@ -140,7 +176,11 @@ export class Wanted {
 
   get search() {
     if (this.stars <= 0 || !this.lastSeen) return null;
-    return { x: this.lastSeen.x, z: this.lastSeen.z, r: this.searchRadius || 60 };
+    const out = this._searchFrame;
+    out.x = this.lastSeen.x;
+    out.z = this.lastSeen.z;
+    out.r = this.searchRadius || 60;
+    return out;
   }
 
   hudState() {
@@ -167,6 +207,7 @@ export class Wanted {
 
   clear(silent = false) {
     const before = this.stars;
+    this.suspended = false;
     this.stars = 0;
     this.evade = 0;
     this.evadeNeed = 0;

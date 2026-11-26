@@ -125,8 +125,12 @@ export class Traffic {
     this.crimeCooldown = 0;
     this.lowQuality = false;
     this.activeVehicles = 0;
+    // Only AI traffic spends the LOW-quality update budget. Parked cars stay
+    // active for collision but no longer starve moving cars of the eight slots.
+    this.activeTraffic = 0;
     this.activePeds = 0;
     this._playerVehicle = null;
+    this._enterables = [];
 
     for (let i = 0; i < 16; i++) {
       const p = world.randomRoadPoint(this.rng);
@@ -269,8 +273,15 @@ export class Traffic {
     p.mesh.position.set(p.x, 0, p.z);
   }
 
+  // Reused list: main.js asks for it on every frame to show the ENTER prompt.
   get enterables() {
-    return this.vehicles.filter((v) => !['police', 'wrecked', 'suspect'].includes(v.role));
+    const out = this._enterables;
+    out.length = 0;
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      if (v.role !== 'police' && v.role !== 'wrecked' && v.role !== 'suspect') out.push(v);
+    }
+    return out;
   }
 
   nearestVehicle(pos) {
@@ -516,8 +527,13 @@ export class Traffic {
     pv.speed *= 0.72;
     v.speed *= 0.55;
     if (impact > 6) {
-      pv.health = Math.max(0, pv.health - impact * 0.09);
-      v.health = Math.max(0, v.health - impact * 0.06);
+      // One damage entry point for both cars keeps sparks/smoke deterministic
+      // and lets an armour upgrade actually reduce the hit.
+      const resistance = pv.upgrades?.armor ? 0.55 : 1;
+      if (typeof pv.damage === 'function') pv.damage(impact * 0.09 * resistance);
+      else pv.health = Math.max(0, pv.health - impact * 0.09 * resistance);
+      if (typeof v.damage === 'function') v.damage(impact * 0.06);
+      else v.health = Math.max(0, v.health - impact * 0.06);
     }
     if (impact > 11 && (v.accidentCooldown || 0) <= 0) {
       v.accidentCooldown = 7;
@@ -743,6 +759,7 @@ export class Traffic {
     this.hornTime = Math.max(0, this.hornTime - dt);
     this._playerVehicle = player.vehicle;
     this.activeVehicles = 0;
+    this.activeTraffic = 0;
     for (let i = this.incidents.length - 1; i >= 0; i--) {
       this.incidents[i].life -= dt;
       if (this.incidents[i].life <= 0) this.incidents.splice(i, 1);
@@ -757,16 +774,26 @@ export class Traffic {
       const d = dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z);
       let active = true;
       if (this.lowQuality) {
-        // Keep nearby parked cars for collision, the closest moving cars and
-        // half of the mid-range ones; hide the rest without removing them.
-        active = v.ai
-          ? d < 120 * 120 && (d < 45 * 45 || (i & 1) === 0) && this.activeVehicles < 8
-          : d < 120 * 120;
+        // Near cars always run; the mid-range AI budget is counted separately
+        // from parked cars so AUTO's 28/45 FPS thresholds cannot starve the
+        // lane immediately around the player.
+        if (v.ai) {
+          // dist2() is a true Euclidean distance here, not a squared one.
+          const near = d < 45;
+          active = d < 120 && (near || ((i & 1) === 0 && this.activeTraffic < 8));
+        } else {
+          active = d < 120;
+        }
       }
+      const wasActive = v._phase3Active !== false;
       v._phase3Active = active;
       v.mesh.visible = active;
       if (!active) continue;
+      // A car that was frozen by LOW is snapped back onto its lane on the
+      // first HIGH frame so AUTO toggles never leave overlapping traffic.
+      if (!wasActive && v.ai && v.route) v._sync(0);
       this.activeVehicles++;
+      if (v.ai && v.route) this.activeTraffic++;
       if (v.role === 'police' || v.role === 'suspect') continue;
       if (v.ai) {
         v.yieldToPlayer = d < 10 && Math.abs(v.speed - player.speed) > 5;

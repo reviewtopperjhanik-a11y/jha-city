@@ -1,5 +1,8 @@
 const KEY = 'jha-city-save-v2';
 const SLOT_PREFIX = 'jha-city-slot-';
+// The active slot is its own tiny record: an autosave must never have to
+// rewrite (or infer) a manual slot just to remember which one is in use.
+const ACTIVE_KEY = 'jha-city-active-slot';
 export const SLOT_COUNT = 3;
 
 const DEFAULTS = {
@@ -117,49 +120,111 @@ const normalize = (raw) => {
 export { normalize as normalizeSave };
 
 let activeSlot = 1;
+let lastSave = 0;
 
 const slotKey = (slot) => `${SLOT_PREFIX}${slot}`;
 const validSlot = (slot) => Math.max(1, Math.min(SLOT_COUNT, Math.round(Number(slot) || 1)));
 
-function readSlot(slot) {
+const storageGet = (key) => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+const storageSet = (key, value) => {
+  try { localStorage.setItem(key, value); return true; } catch { return false; }
+};
+const storageRemove = (key) => {
+  try { localStorage.removeItem(key); return true; } catch { return false; }
+};
+
+function parseRecord(raw) {
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(slotKey(slot)) || (slot === 1 ? localStorage.getItem(KEY) : null);
-    return raw ? normalize(JSON.parse(raw)) : null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? normalize(parsed) : null;
   } catch {
     return null;
   }
 }
 
-export function loadSave(slot = activeSlot) {
-  activeSlot = validSlot(slot);
-  const data = readSlot(activeSlot) || (activeSlot === 1 ? null : readSlot(1));
-  return data || normalize(null);
+// Slot 1 still understands the old single-save key for installs made before
+// manual slots existed. An empty-string marker means "deleted", so slot 1 can
+// be cleared without resurrecting the live autosave key as its content.
+function readSlot(slot) {
+  const raw = storageGet(slotKey(slot));
+  if (raw !== null) return parseRecord(raw === '' ? null : raw);
+  return slot === 1 ? parseRecord(storageGet(KEY)) : null;
 }
 
-let lastSave = 0;
-export function saveGame(state, force = false, slot = activeSlot) {
-  const now = performance.now();
-  if (!force && now - lastSave < 2000) return;
-  lastSave = now;
+function readAutosave() {
+  return parseRecord(storageGet(KEY));
+}
+
+function persistedSlot() {
+  const raw = storageGet(ACTIVE_KEY);
+  return raw === null ? null : validSlot(raw);
+}
+
+// Every path that selects a slot (boot, manual save, manual load) writes the
+// pointer immediately, so a reload always resumes the same slot.
+function selectSlot(slot) {
   activeSlot = validSlot(slot);
-  const json = JSON.stringify(state);
-  try {
-    // KEY stays as the live autosave for older installs; slots are manual copies.
-    localStorage.setItem(KEY, json);
-    localStorage.setItem(slotKey(activeSlot), json);
-  } catch {
-    /* storage disabled — game still works */
+  storageSet(ACTIVE_KEY, String(activeSlot));
+  return activeSlot;
+}
+
+export function setActiveSlot(slot) {
+  return selectSlot(slot);
+}
+
+export function hasSlot(slot) {
+  return !!readSlot(validSlot(slot));
+}
+
+export function loadSave(slot) {
+  if (slot === undefined) {
+    // Boot: the live autosave is authoritative for the selected slot; the
+    // manual snapshot is only a fallback when no autosave has happened yet.
+    const index = persistedSlot() ?? activeSlot;
+    selectSlot(index);
+    return readAutosave() || readSlot(index) || normalize(null);
   }
+  const index = validSlot(slot);
+  selectSlot(index);
+  return readSlot(index) || readAutosave() || normalize(null);
 }
 
+// Autosave path. It only ever writes the live key — manual slot files are
+// untouched, even when the caller passes a slot (that only switches pointer).
+export function saveGame(state, force = false, slot) {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (!force && now - lastSave < 2000) return false;
+  lastSave = now;
+  if (slot !== undefined) selectSlot(slot);
+  storageSet(KEY, JSON.stringify(state || {}));
+  return true;
+}
+
+// Manual slot path. Writes the selected slot plus the live key so a reload
+// continues from exactly the state that was just saved.
 export function saveSlot(slot, state) {
-  saveGame(state, true, slot);
-  return readSlot(validSlot(slot));
+  const index = validSlot(slot);
+  const json = JSON.stringify(state || {});
+  storageSet(slotKey(index), json);
+  storageSet(KEY, json);
+  selectSlot(index);
+  lastSave = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  return readSlot(index);
 }
 
+// An empty slot is never silently replaced by slot 1 defaults. Callers must
+// be able to tell "nothing here" from a fresh game.
 export function loadSlot(slot) {
-  activeSlot = validSlot(slot);
-  return loadSave(activeSlot);
+  const index = validSlot(slot);
+  const data = readSlot(index);
+  if (!data) return null;
+  selectSlot(index);
+  storageSet(KEY, JSON.stringify(data));
+  lastSave = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  return data;
 }
 
 export function listSlots() {
@@ -170,6 +235,7 @@ export function listSlots() {
       index,
       exists: !!data,
       money: data?.money || 0,
+      hp: data?.hp ?? 100,
       missionsDone: data?.missionsDone || 0,
       hours: data?.hours || 0,
       storyStep: data?.storyStep || 0,
@@ -178,13 +244,17 @@ export function listSlots() {
 }
 
 export function deleteSlot(slot) {
-  try {
-    localStorage.removeItem(slotKey(validSlot(slot)));
-  } catch {
-    /* storage disabled */
+  const index = validSlot(slot);
+  storageSet(slotKey(index), '');
+  if (index === 1 && activeSlot === 1) storageRemove(KEY);
+  if (activeSlot === index) {
+    // The live autosave belonged to the deleted slot; drop it and fall back
+    // to slot 1 rather than booting straight back into the erased progress.
+    storageRemove(KEY);
+    selectSlot(1);
   }
 }
 
 export function currentSlot() {
-  return activeSlot;
+  return persistedSlot() ?? activeSlot;
 }

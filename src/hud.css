@@ -364,32 +364,43 @@
 .hud[data-mode="menu"] .touch-right { display: none; }
 
 /* ------------------------------------------------------------- edit mode */
+/* The editor is a scrim, NOT a pointer trap: the zone buttons underneath must
+   stay draggable. Only the panel itself takes input; everything else passes
+   through to the HUD. */
+.hud.editing { z-index: 70; }
+.hud.editing::before {
+  content: ''; position: fixed; inset: 0; z-index: 1; pointer-events: auto;
+}
+.hud.editing #look-surface { pointer-events: none; }
 .edit-overlay {
   position: fixed; inset: 0; z-index: 75; display: none; place-items: center;
-  pointer-events: auto; background: rgba(5, 6, 15, 0.86);
+  pointer-events: none; background: rgba(5, 6, 15, 0.86);
 }
 .edit-overlay.open { display: grid; }
 .edit-panel {
-  width: min(92vw, 440px); max-height: 92vh; overflow: auto; padding: 12px 14px;
+  width: min(92vw, 440px); max-height: calc(100vh - 24px); overflow: auto;
+  padding: 12px 14px max(12px, env(safe-area-inset-bottom));
   border-radius: 14px; border: 1px solid rgba(143, 240, 232, 0.55);
   background: linear-gradient(155deg, rgba(30, 27, 55, 0.99), rgba(10, 8, 25, 0.99));
+  pointer-events: auto; touch-action: pan-y;
 }
 .edit-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
 .edit-title { color: var(--hud-cyan); font-size: 13px; font-weight: 900; letter-spacing: 3px; }
 .edit-close {
-  margin-left: auto; min-width: 44px; min-height: 44px; border-radius: 10px;
+  margin-left: auto; min-width: 48px; min-height: 48px; border-radius: 10px;
   border: 1px solid var(--hud-line); background: var(--hud-bg); color: var(--hud-ink); font-size: 16px;
+  touch-action: manipulation;
 }
 .edit-note { color: rgba(255, 233, 210, 0.55); font-size: 9px; line-height: 1.5; margin: 0 0 8px; }
 .edit-label { color: var(--hud-cyan); font-size: 9px; font-weight: 800; letter-spacing: 1.5px; padding: 8px 0 4px; }
 .edit-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .edit-btn, .edit-action {
-  min-height: 44px; padding: 7px; border-radius: 8px; border: 1px solid rgba(255, 169, 72, 0.45);
+  min-height: 48px; padding: 7px; border-radius: 8px; border: 1px solid rgba(255, 169, 72, 0.45);
   background: var(--hud-bg); color: var(--hud-ink); font-size: 9px; font-weight: 800; letter-spacing: 0.6px;
   touch-action: manipulation;
 }
 .edit-btn.active { border-color: var(--hud-cyan); color: var(--hud-cyan); background: rgba(47, 182, 178, 0.2); }
-.edit-slider { width: 100%; accent-color: #2fb6b2; touch-action: manipulation; }
+.edit-slider { width: 100%; min-height: 48px; accent-color: #2fb6b2; touch-action: manipulation; }
 .edit-value { color: #ffa948; font-size: 9px; font-weight: 800; }
 .edit-selected { color: #ffa948; font-size: 10px; font-weight: 900; letter-spacing: 1px; }
 .edit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 10px; }
@@ -406,4 +417,10 @@
   #zone-tl .minimap-wrap, .vitals { min-width: 88px; width: min(22vh, 96px); }
   .touch-right { gap: 8px; }
   .touch-right .row { gap: 8px; }
+  /* Keep the editor usable on short landscape screens: scroll, never clip. */
+  .edit-panel { max-height: calc(100vh - 16px); padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
+  .edit-head { padding-bottom: 4px; }
+  .edit-note, .edit-label { margin-bottom: 2px; padding-top: 4px; padding-bottom: 2px; }
+  .edit-row, .edit-actions { gap: 4px; }
+  .edit-actions { padding-top: 6px; }
 }

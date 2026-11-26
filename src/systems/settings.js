@@ -49,16 +49,20 @@ export class Settings {
     this.sound = save.sound !== false;
     this.vibration = save.vibration !== false;
     this.steering = STEERING_MODES.includes(save.steering) ? save.steering : 'joystick';
-    this.isOpen = false;
+    // Read-only from outside: main.js uses this as its pause gate.
+    this._isOpen = false;
     this.fpsSmooth = 60;
+    this.fpsPrimed = false;
     this.fpsTimer = 0;
     this.elapsed = 0;
     this.lowTime = 0;
     this.highTime = 0;
+    // Short settle delay after any tier change. Same-direction changes get an
+    // extra pause so one long high-FPS stretch cannot climb two tiers at once;
+    // the opposite direction stays available for a genuine performance drop.
     this.cooldown = 0;
-    this.lastUpgrade = -999;
-    this.upgradeLocked = false;
-    this.upgradeLockUntil = 0;
+    this.downCooldown = 0;
+    this.upCooldown = 0;
 
     this.overlay = document.createElement('div');
     this.overlay.className = 'settings-overlay';
@@ -109,7 +113,7 @@ export class Settings {
       if (e.target === this.overlay) this.close();
     });
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Escape' && this.isOpen) this.close();
+      if (e.code === 'Escape' && this._isOpen) this.close();
     });
     for (const btn of this.qualityButtons) {
       btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
@@ -163,6 +167,11 @@ export class Settings {
     this._renderFps();
   }
 
+  // Pause gate for the render loop: true only while the panel is actually up.
+  get isOpen() {
+    return this._isOpen;
+  }
+
   _renderSlots() {
     if (!this.slotRow) return;
     const active = currentSlot();
@@ -171,7 +180,7 @@ export class Settings {
       <div class="slot-item ${s.index === active ? 'active' : ''}">
         <span>S${s.index}<small>${s.exists ? `$${s.money} · ${s.storyStep}/${STORY_TOTAL}` : 'EMPTY'}</small></span>
         <button data-slot="save-${s.index}">SAVE</button>
-        <button data-slot="load-${s.index}">LOAD</button>
+        <button data-slot="load-${s.index}" ${s.exists ? '' : 'disabled aria-disabled="true"'}>LOAD</button>
       </div>`).join('');
     for (const btn of this.slotRow.querySelectorAll('button')) {
       btn.addEventListener('click', () => {
@@ -179,19 +188,21 @@ export class Settings {
         const slot = Number(index);
         if (action === 'save') {
           saveSlot(slot, this.save);
+          this.save.activeSlot = slot;
           this.onSaveSlot(slot);
           this.toast(`SLOT ${slot} SAVED`);
           this._renderSlots();
-        } else {
-          const found = listSlots().find((s) => s.index === slot);
-          if (!found?.exists) {
-            this.toast(`SLOT ${slot} IS EMPTY`);
-            return;
-          }
-          const state = loadSlot(slot);
-          this.onLoadSlot(slot, state);
-          this._renderSlots();
+          return;
         }
+        // loadSlot() returns null for an empty slot — never fall back to
+        // slot 1 or to a fresh game just because the player tapped LOAD.
+        const state = loadSlot(slot);
+        if (!state) {
+          this.toast(`SLOT ${slot} IS EMPTY`);
+          return;
+        }
+        this.onLoadSlot(slot, state);
+        this._renderSlots();
       });
     }
   }
@@ -237,7 +248,11 @@ export class Settings {
     this.vibrationButton.classList.toggle('active', this.vibration);
     this.steeringButton.textContent = `STEERING: ${this.steering.toUpperCase()}`;
     this.steeringButton.classList.toggle('active', this.steering !== 'joystick');
-    if (this.fpsEl) this.fpsEl.style.display = this.showFps ? 'block' : 'none';
+    if (this.fpsEl) {
+      // Let hud.css own the layout (nowrap + one line); only toggle visibility.
+      this.fpsEl.hidden = !this.showFps;
+      this.fpsEl.style.display = this.showFps ? '' : 'none';
+    }
     this._renderFps();
     saveGame(this.save, true);
   }
@@ -272,7 +287,10 @@ export class Settings {
     this.steering = STEERING_MODES.includes(s.steering) ? s.steering : 'joystick';
     this.lowTime = 0;
     this.highTime = 0;
-    this.cooldown = 2;
+    this.cooldown = 1.5;
+    this.downCooldown = 0;
+    this.upCooldown = 0;
+    this.fpsPrimed = false;
     this._apply();
   }
 
@@ -281,19 +299,19 @@ export class Settings {
     if (mode === 'auto') {
       const current = this._preset();
       this.autoTier = clamp(TIERS.findIndex((t) => t.key === current.key), 0, 2);
-      this.upgradeLocked = false;
-      this.upgradeLockUntil = 0;
       this.lowTime = 0;
       this.highTime = 0;
-      this.cooldown = 4;
+      this.cooldown = 1.5;
+      this.downCooldown = 0;
+      this.upCooldown = 0;
     }
     this.mode = mode;
     this._apply();
   }
 
   open() {
-    if (this.isOpen) return;
-    this.isOpen = true;
+    if (this._isOpen) return;
+    this._isOpen = true;
     this.overlay.classList.add('open');
     this.overlay.setAttribute('aria-hidden', 'false');
     this._renderSlots();
@@ -301,62 +319,68 @@ export class Settings {
   }
 
   close() {
-    this.isOpen = false;
+    this._isOpen = false;
     this.overlay.classList.remove('open');
     this.overlay.setAttribute('aria-hidden', 'true');
   }
 
-  update(dt, fps) {
-    const safeFps = clamp(fps || 60, 1, 144);
-    this.fpsSmooth += (safeFps - this.fpsSmooth) * (1 - Math.exp(-5 * dt));
-    this.elapsed += dt;
-    this.cooldown = Math.max(0, this.cooldown - dt);
+  toggle() {
+    if (this._isOpen) this.close();
+    else this.open();
+    return this._isOpen;
+  }
 
-    this.fpsTimer += dt;
+  update(dt, fps) {
+    const step = clamp(Number(dt) || 0, 0, 0.25);
+    const safeFps = clamp(fps || 60, 1, 144);
+    // Prime on the first sample so a genuinely slow start can trigger the
+    // 3s rule immediately instead of waiting for the smoother to catch up.
+    if (!this.fpsPrimed) {
+      this.fpsSmooth = safeFps;
+      this.fpsPrimed = true;
+    } else {
+      this.fpsSmooth += (safeFps - this.fpsSmooth) * (1 - Math.exp(-5 * step));
+    }
+    this.elapsed += step;
+    this.cooldown = Math.max(0, this.cooldown - step);
+    this.downCooldown = Math.max(0, this.downCooldown - step);
+    this.upCooldown = Math.max(0, this.upCooldown - step);
+
+    this.fpsTimer += step;
     if (this.fpsTimer >= 0.3) {
       this.fpsTimer = 0;
       this._renderFps();
     }
 
-    if (this.mode !== 'auto' || this.elapsed < 4) return;
-    if (this.upgradeLocked && this.elapsed > this.upgradeLockUntil) this.upgradeLocked = false;
+    if (this.mode !== 'auto') return;
 
-    if (this.fpsSmooth < 28) this.lowTime += dt;
-    else this.lowTime = Math.max(0, this.lowTime - dt * 0.7);
-    if (this.fpsSmooth > 45) this.highTime += dt;
-    else this.highTime = Math.max(0, this.highTime - dt * 0.8);
+    // Continuous dwell times: leaving the band resets that band's timer.
+    // 28/45 separation plus 3s/5s dwell prevents flapping on its own.
+    this.lowTime = this.fpsSmooth < 28 ? this.lowTime + step : 0;
+    this.highTime = this.fpsSmooth > 45 ? this.highTime + step : 0;
+    if (this.cooldown > 0) return;
 
-    // Spec: drop after 3s below 28 FPS, rise after 5s above 45 FPS.
-    // A 12s cooldown plus an anti-flap lock keeps the tier from oscillating.
-    if (this.lowTime >= 3 && this.autoTier < 2 && this.cooldown <= 0) {
-      if (this.elapsed - this.lastUpgrade < 60) {
-        this.upgradeLocked = true;
-        this.upgradeLockUntil = this.elapsed + 60;
-      }
+    if (this.lowTime >= 3 && this.autoTier < 2 && this.downCooldown <= 0) {
       this.autoTier++;
-      this.lastUpgrade = this.elapsed;
       this.lowTime = 0;
       this.highTime = 0;
-      this.cooldown = 12;
+      this.cooldown = 1.5;
+      this.downCooldown = 12;
+      this.upCooldown = 0;
       this._apply();
-      if (!this.isOpen) this.toast(`QUALITY: ${this._preset().label}`);
+      if (!this._isOpen) this.toast(`QUALITY: ${this._preset().label}`);
       return;
     }
 
-    if (
-      this.highTime >= 5 &&
-      this.autoTier > 0 &&
-      !this.upgradeLocked &&
-      this.cooldown <= 0 &&
-      this.elapsed - this.lastUpgrade > 20
-    ) {
+    if (this.highTime >= 5 && this.autoTier > 0 && this.upCooldown <= 0) {
       this.autoTier--;
-      this.lastUpgrade = this.elapsed;
       this.highTime = 0;
       this.lowTime = 0;
-      this.cooldown = 12;
+      this.cooldown = 1.5;
+      this.upCooldown = 12;
+      this.downCooldown = 0;
       this._apply();
-      if (!this.isOpen) this.toast(`QUALITY: ${this._preset().label}`);
+      if (!this._isOpen) this.toast(`QUALITY: ${this._preset().label}`);
     }
   }
 }

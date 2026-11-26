@@ -99,6 +99,7 @@ export class MissionOverlay {
     this._done = null;
     this._after = null;
     this._doneCalled = false;
+    this._afterCalled = false;
 
     this.el = document.createElement('div');
     this.el.className = 'mission-overlay';
@@ -131,6 +132,8 @@ export class MissionOverlay {
     this.el.dataset.kind = kind;
     this.el.hidden = false;
     this.isOpen = true;
+    this._doneCalled = false;
+    this._afterCalled = false;
   }
 
   dialog(speaker, lines, done) {
@@ -168,20 +171,13 @@ export class MissionOverlay {
       }
       return;
     }
-    const after = this._after;
-    this._after = null;
+    // hide() owns callback delivery now, so programmatic hides cannot drop
+    // a pass/fail callback either.
     this.hide();
-    if (typeof after === 'function') after();
   }
 
   _finishDialog() {
-    const done = this._done;
-    this._done = null;
     this.hide();
-    if (typeof done === 'function' && !this._doneCalled) {
-      this._doneCalled = true;
-      done();
-    }
   }
 
   showPass(info) {
@@ -210,13 +206,27 @@ export class MissionOverlay {
     this.button.textContent = 'RETRY';
   }
 
-  hide() {
+  // Every dismissal path runs pending callbacks exactly once. Callers that
+  // intentionally cancel a card (slot load, death) can pass
+  // { runCallbacks: false } to drop them.
+  hide({ runCallbacks = true } = {}) {
+    const done = this._done;
+    const after = this._after;
+    const doneCalled = this._doneCalled;
+    const afterCalled = this._afterCalled;
     this.isOpen = false;
     this.kind = null;
     this.el.hidden = true;
     this.el.dataset.kind = 'none';
     this._lines = [];
+    this._index = 0;
+    this._done = null;
     this._after = null;
+    this._doneCalled = true;
+    this._afterCalled = true;
+    if (!runCallbacks) return;
+    if (typeof done === 'function' && !doneCalled) done();
+    if (typeof after === 'function' && !afterCalled) after();
   }
 }
 

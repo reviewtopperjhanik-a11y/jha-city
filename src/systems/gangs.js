@@ -12,6 +12,10 @@ const LOW_CAP = 5;
 const TAU = Math.PI * 2;
 const CREW_COLORS = [0xcc46a0, 0x2fb6b2, 0x813dbb];
 const ACCENT_COLORS = [0xff885f, 0xf6e6c8, 0xffa948];
+// Heat decides both how many shooters arrive and how quickly the next wave
+// can form. The hard actor cap above is never exceeded.
+const WAVE_COUNTS = [0, 0, 0, 2, 3, 4];
+const WAVE_DELAYS = [0, 0, 0, 8.5, 6.5, 4.5];
 
 function tint(geometry, color) {
   const count = geometry.attributes.position.count;
@@ -128,10 +132,16 @@ export class Gangs {
   }
 
   clearAll() {
-    for (let i = 0; i < this._actors.length; i++) this._deactivate(this._actors[i]);
+    for (let i = 0; i < this._actors.length; i++) {
+      const actor = this._actors[i];
+      this._deactivate(actor);
+      actor.hp = 54;
+      actor.glow.visible = !this.lowQuality;
+    }
     this._visible.length = 0;
     this.spawnTimer = 0.35;
     this.wave = 0;
+    this.spawnAngle = 0;
   }
 
   damageActor(actor, amount) {
@@ -140,6 +150,7 @@ export class Gangs {
     if (!Number.isFinite(damage) || damage <= 0) return false;
     actor.hp -= damage;
     if (actor.hp > 0) return false;
+    actor.hp = 0;
     this._deactivate(actor);
     this._removeVisible(actor);
     return true;
@@ -147,20 +158,28 @@ export class Gangs {
 
   update(dt, player, wanted, time) {
     if (!Number.isFinite(dt) || dt < 0) dt = 0;
-    const stars = Number(wanted?.stars) || 0;
-    if (stars < 3 || !player?.pos) {
-      if (this._visible.length) this.clearAll();
+    const rawStars = Number(wanted?.stars);
+    const stars = Number.isFinite(rawStars) ? Math.max(0, Math.min(5, Math.round(rawStars))) : 0;
+    const px = player?.pos?.x;
+    const pz = player?.pos?.z;
+    const finitePos = Number.isFinite(px) && Number.isFinite(pz);
+    let anyActive = false;
+    for (let i = 0; i < this._actors.length; i++) {
+      if (this._actors[i].active) { anyActive = true; break; }
+    }
+    if (stars < 3 || !finitePos) {
+      // Check the real pool, not just the visible view: a stale actor left by
+      // an interrupted frame must not survive a wanted clear.
+      if (anyActive) this.clearAll();
       return;
     }
 
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0 && this._visible.length < this.cap) {
       this._spawnWave(player, stars);
-      this.spawnTimer = stars >= 5 ? 5.5 : stars >= 4 ? 7 : 8.5;
+      this.spawnTimer = WAVE_DELAYS[stars] || 8.5;
     }
 
-    const px = player.pos.x;
-    const pz = player.pos.z;
     for (let i = 0; i < this._actors.length; i++) {
       const actor = this._actors[i];
       if (!actor.active) continue;
@@ -226,7 +245,8 @@ export class Gangs {
   _spawnWave(player, stars) {
     this.wave++;
     this.spawnAngle = player.heading + (this.wave * 1.73) % TAU;
-    const count = Math.min(stars >= 5 ? 3 : 2, this.cap - this._visible.length);
+    const count = Math.min(WAVE_COUNTS[stars] || 2, this.cap - this._visible.length);
+    if (count <= 0) return;
     let spawned = 0;
     for (let slot = 0; slot < this._actors.length && spawned < count; slot++) {
       const actor = this._actors[slot];
@@ -283,6 +303,10 @@ export class Gangs {
     if (!actor.active) return;
     actor.active = false;
     actor.group.visible = false;
+    actor.cooldown = 0;
+    actor.life = 0;
+    actor.glow.userData.flash = 0;
+    actor.glow.scale.setScalar(1);
   }
 
   _removeVisible(actor) {

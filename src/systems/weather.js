@@ -10,6 +10,12 @@ const AUTO_STATES = [
   { key: 'snow', target: 0.68, weight: 0.08 },
 ];
 const SNOW_TARGET = 0.68;
+const MAX_STEP = 1; // seconds; a background tab must not teleport the weather
+
+const finite = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
 
 // Two recycled batches: rain reads as short line streaks, snow as a preallocated
 // Points batch with a procedural soft dot. No textures or per-frame allocations.
@@ -19,7 +25,7 @@ export class Weather {
     this.look = look;
     this.world = world;
     this.rng = makeRng(5522);
-    this.onChange = callbacks.change || (() => {});
+    this.onChange = typeof callbacks.change === 'function' ? callbacks.change : (() => {});
     this.mode = 'auto';
     this.autoState = 'clear';
     this.timer = 18 + this.rng() * 20;
@@ -101,11 +107,12 @@ export class Weather {
     if (this.mode === 'rain') return 1;
     if (this.mode === 'snow') return SNOW_TARGET;
     if (this.mode === 'clear') return 0;
-    return AUTO_STATES.find((s) => s.key === this.autoState)?.target || 0;
+    const state = AUTO_STATES.find((s) => s.key === this.autoState);
+    return clamp(state?.target || 0, 0, 1);
   }
 
   get grip() {
-    return 1 - this.level * (this.snowing ? 0.28 : 0.2);
+    return clamp(1 - this.level * (this.snowing ? 0.28 : 0.2), 0.5, 1);
   }
 
   isRaining() {
@@ -121,7 +128,10 @@ export class Weather {
 
   setMode(mode) {
     this.mode = MODES.includes(mode) ? mode : 'auto';
-    if (this.mode === 'auto') this.timer = Math.max(this.timer, 6);
+    if (this.mode === 'auto') {
+      if (!Number.isFinite(this.timer)) this.timer = 6;
+      this.timer = Math.max(this.timer, 6);
+    }
     return this.mode;
   }
 
@@ -157,23 +167,27 @@ export class Weather {
   }
 
   labelForTarget(target) {
-    return this.labelForState({ target });
+    return this.labelForState({ target: finite(target, 0) });
   }
 
   labelForState(state) {
-    if (state.key === 'snow' || this.mode === 'snow') return '❄ SNOW';
-    if (state.target === 0) return '☀ CLEAR';
-    if (state.target < 0.5) return '☁ DRIZZLE';
+    if (state?.key === 'snow' || this.mode === 'snow') return '❄ SNOW';
+    const target = finite(state?.target, 0);
+    if (target === 0) return '☀ CLEAR';
+    if (target < 0.5) return '☁ DRIZZLE';
     return '☂ RAIN';
   }
 
   update(dt, player) {
+    const step = Math.max(0, Math.min(finite(dt, 0), MAX_STEP));
     if (this.mode === 'auto') {
-      this.timer -= dt;
+      if (!Number.isFinite(this.timer)) this.timer = 18;
+      this.timer -= step;
       if (this.timer <= 0) this._pickAutoState();
     }
     const target = this.target;
-    this.level = damp(this.level, target, 0.55, dt);
+    this.level = clamp(damp(this.level, target, 0.55, step), 0, 1);
+    if (!Number.isFinite(this.level)) this.level = 0;
     if (Math.abs(this.level - target) < 0.008) this.level = target;
     this.world?.setWetness?.(this.level);
     this.look.setWeather?.(this.level);
@@ -186,16 +200,16 @@ export class Weather {
     this.drops.material.color.setHex(snow ? 0xe8f2ff : 0xbfe3ff);
     this.drops.material.opacity = clamp(0.16 + this.level * (snow ? 0.44 : 0.5), 0, 0.66);
     if (snow) this.snowPoints.material.uniforms.opacity.value = clamp(0.28 + this.level * 0.55, 0, 0.78);
-    const px = player.pos.x;
-    const pz = player.pos.z;
+    const px = finite(player?.pos?.x, 0);
+    const pz = finite(player?.pos?.z, 0);
     const fallScale = snow ? 0.16 : 0.45 + this.level * 0.75;
     const streak = snow ? 0.22 : 1.2 + this.level * 0.9;
     const slant = snow ? 0.12 : 0.5;
     for (let i = 0; i < this.count; i++) {
       const k = i * 3;
       const p = i * 6;
-      this.local[k + 1] -= this.speeds[i] * dt * fallScale;
-      this.local[k] += dt * this.drifts[i] * (snow ? 2.2 : 2.5);
+      this.local[k + 1] -= this.speeds[i] * step * fallScale;
+      this.local[k] += step * this.drifts[i] * (snow ? 2.2 : 2.5);
       if (this.local[k + 1] < 0 || Math.abs(this.local[k]) > 32) this._respawn(i);
       const x = px + this.local[k];
       const y = this.local[k + 1];

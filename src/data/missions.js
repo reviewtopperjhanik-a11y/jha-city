@@ -188,4 +188,52 @@ export const MISSION_DATA = {
 };
 
 export const storyCount = MISSION_DATA.story.length;
+export const MISSION_SCHEMA_VERSION = 1;
+
+// Cheap authoring check used by the engine and the regression harness. It
+// catches the classic content mistakes — a fourth checkpoint with only three
+// labels, a base that disagrees with rewards.base, a chapter pointing at a job
+// that no longer exists — before they become runtime NaN payouts or an
+// impossible objective chain.
+export function missionDataIssues(data = MISSION_DATA) {
+  const issues = [];
+  const jobs = data?.jobs && typeof data.jobs === 'object' ? data.jobs : {};
+  const story = Array.isArray(data?.story) ? data.story : [];
+
+  if (story.length < 5) issues.push('story needs at least five chapters');
+  const ids = new Set();
+  for (const s of story) {
+    if (!s || typeof s !== 'object') { issues.push('story entry is not an object'); continue; }
+    if (typeof s.id !== 'string' || !s.id) issues.push('story chapter has no id');
+    else if (ids.has(s.id)) issues.push(`duplicate story id: ${s.id}`);
+    else ids.add(s.id);
+    if (!jobs[s.job]) issues.push(`story ${s.id || '?'} targets unknown job ${s.job}`);
+    const objectives = Array.isArray(s.objectives) ? s.objectives : [];
+    if (!objectives.length) issues.push(`story ${s.id || '?'} has no objectives`);
+    checkShape(s, objectives, `story ${s.id || '?'}`, issues);
+  }
+
+  for (const [type, job] of Object.entries(jobs)) {
+    if (!job || typeof job !== 'object') { issues.push(`job ${type} is not an object`); continue; }
+    const objectives = Array.isArray(job.objectives) ? job.objectives : [];
+    if (!objectives.length) issues.push(`job ${type} has no objectives`);
+    checkShape(job, objectives, `job ${type}`, issues);
+  }
+  return issues;
+}
+
+function checkShape(entry, objectives, where, issues) {
+  const points = Number(entry.points ?? entry.waypoints);
+  if (!Number.isFinite(points) || points < 1) issues.push(`${where}: invalid point count`);
+  else if (points !== objectives.length) issues.push(`${where}: points ${points} != objectives ${objectives.length}`);
+  const labels = Array.isArray(entry.labels) ? entry.labels : [];
+  if (labels.length !== objectives.length) issues.push(`${where}: labels ${labels.length} != objectives ${objectives.length}`);
+  const base = Number(entry.base);
+  if (!Number.isFinite(base) || base <= 0) issues.push(`${where}: invalid base payout`);
+  else if (entry.rewards && Number.isFinite(Number(entry.rewards.base)) && Number(entry.rewards.base) !== base) {
+    issues.push(`${where}: base ${base} != rewards.base ${entry.rewards.base}`);
+  }
+  for (const line of objectives) if (typeof line !== 'string' || !line) issues.push(`${where}: empty objective label`);
+}
+
 export default MISSION_DATA;

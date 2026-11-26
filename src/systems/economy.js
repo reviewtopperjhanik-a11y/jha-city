@@ -23,6 +23,43 @@ export const LOCATIONS = [
   { key: 'safehouse', label: 'SAFEHOUSE', x: 0, z: -195, color: C.orchid },
 ];
 
+const MONEY_LIMIT = 99999999;
+const VEHICLE_TYPES = new Set(['bike', 'car']);
+const UPGRADE_KEYS = new Set(['engine', 'armor', 'handling']);
+const num = (value, fallback, lo = -Infinity, hi = Infinity) => {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : fallback;
+};
+const colorOf = (value, fallback = CAR_COLORS[0]) => num(value, fallback, 0, 0xffffff);
+
+// Money is owned by the save record, but the economy is the single place that
+// defines its range. main.js can call these helpers so NaN/negative cash can
+// never survive a purchase, fine or payout.
+export function clampMoney(value) {
+  return Math.round(num(value, 0, 0, MONEY_LIMIT));
+}
+
+export function spendMoney(state, cost) {
+  if (!state || typeof state !== 'object') return false;
+  const price = num(cost, Infinity, 0, MONEY_LIMIT);
+  const money = clampMoney(state.money);
+  if (!Number.isFinite(price) || money < price) {
+    state.money = money;
+    return false;
+  }
+  state.money = money - price;
+  return true;
+}
+
+// The garage menu shows a reinforced body at PRICES.body, while the shop's
+// body-armor refill uses PRICES.armor. Keep the two distinct in one lookup.
+export function garagePrice(action) {
+  if (action === 'body') return PRICES.body;
+  if (action === 'spray') return 750;
+  return num(PRICES[action], 0, 0, MONEY_LIMIT);
+}
+
 const glow = (color, opacity = 1) => new THREE.MeshBasicMaterial({
   color,
   transparent: opacity < 1,
@@ -108,6 +145,7 @@ export class Economy {
   nearest(pos, radius = 16) {
     let best = null;
     let bd = radius;
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.z)) return null;
     for (const loc of this.locations) {
       const d = dist2(pos.x, pos.z, loc.x, loc.z);
       if (d < bd) {
@@ -119,28 +157,36 @@ export class Economy {
   }
 
   update(dt, player) {
+    const step = num(dt, 0, 0);
     for (const m of this.markers) {
-      m.ring.rotation.z += dt * 0.9;
+      m.ring.rotation.z += step * 0.9;
       m.ring.scale.setScalar(1 + Math.sin(performance.now() * 0.003) * 0.04);
     }
+    const px = player?.pos?.x;
+    const pz = player?.pos?.z;
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) return;
     for (const p of this.pickups) {
-      p.core.rotation.y += dt * 1.6;
+      p.core.rotation.y += step * 1.6;
       p.core.position.y = 1.1 + Math.sin(performance.now() * 0.004 + p.x) * 0.14;
       if (!p.active) {
-        p.respawn -= dt;
+        p.respawn -= step;
         if (p.respawn <= 0) {
           p.active = true;
           p.group.visible = true;
         }
         continue;
       }
-      if (dist2(player.pos.x, player.pos.z, p.x, p.z) > 3.2) continue;
-      const full = p.kind === 'health' ? player.hp >= 100 : player.armor >= 100;
-      if (full) continue;
+      if (dist2(px, pz, p.x, p.z) > 3.2) continue;
+      const current = p.kind === 'health' ? player.hp : player.armor;
+      if (!Number.isFinite(current) || current >= 100) continue;
+      // Announce and grant only what was actually gained, so a pickup at 98 HP
+      // cannot claim +35 and a full-health pass cannot waste the respawn timer.
+      const granted = Math.max(0, Math.min(num(p.amount, 35, 0, 100), 100 - current));
+      if (granted <= 0) continue;
       p.active = false;
       p.respawn = 22;
       p.group.visible = false;
-      this.onPickup(p.kind, p.amount);
+      this.onPickup(p.kind, granted);
     }
   }
 
@@ -153,18 +199,25 @@ export class Economy {
   // upgrades always includes color so restore() can reapply a paint job.
   serialize(vehicle, price) {
     if (!vehicle) return null;
-    if (typeof vehicle.descriptor === 'function') {
-      return vehicle.descriptor(price ?? PRICES[vehicle.type] ?? 0);
+    const type = VEHICLE_TYPES.has(vehicle.type) ? vehicle.type : 'car';
+    const color = colorOf(vehicle.color, CAR_COLORS[0]);
+    const cost = num(price, num(PRICES[type], 0, 0), 0, MONEY_LIMIT);
+    let base = null;
+    try {
+      if (typeof vehicle.descriptor === 'function') base = vehicle.descriptor(cost);
+    } catch {
+      base = null;
     }
+    const upgrades = base?.upgrades && typeof base.upgrades === 'object' ? base.upgrades : {};
     return {
-      type: vehicle.type,
-      color: vehicle.color,
-      price: price ?? PRICES[vehicle.type] ?? 0,
+      type,
+      color: colorOf(base?.color ?? color, color),
+      price: cost,
       upgrades: {
-        engine: !!vehicle.upgrades?.engine,
-        armor: !!vehicle.upgrades?.armor,
-        handling: !!vehicle.upgrades?.handling,
-        color: vehicle.color,
+        engine: !!upgrades.engine,
+        armor: !!upgrades.armor,
+        handling: !!upgrades.handling,
+        color: colorOf(upgrades.color ?? base?.color ?? color, color),
       },
     };
   }
@@ -172,31 +225,54 @@ export class Economy {
   // One place for garage-upgrade side effects; spending/toasts stay in main.
   // Returns false when the tune is already installed or the key is unknown.
   upgrade(vehicle, key) {
-    if (!vehicle || (key !== 'engine' && key !== 'armor' && key !== 'handling')) return false;
-    if (vehicle.upgrades?.[key]) return false;
-    vehicle.applyUpgrades({ ...vehicle.upgrades, [key]: true });
+    if (!vehicle || !UPGRADE_KEYS.has(key)) return false;
+    const current = vehicle.upgrades && typeof vehicle.upgrades === 'object' ? vehicle.upgrades : {};
+    if (current[key]) return false;
+    const flags = { ...current, [key]: true };
+    if (flags.color == null && vehicle.color != null) flags.color = vehicle.color;
+    if (typeof vehicle.applyUpgrades === 'function') vehicle.applyUpgrades(flags);
+    else vehicle.upgrades = flags;
     return true;
   }
 
   spawnVehicle(type, color, upgrades = {}) {
+    const kind = VEHICLE_TYPES.has(type) ? type : 'car';
+    const paint = colorOf(color, kind === 'bike' ? CAR_COLORS[0] : CAR_COLORS[1]);
+    const flags = upgrades && typeof upgrades === 'object' ? upgrades : {};
     const z = 65 + this.ownedVehicles.length * 6;
     const spot = this.world.nearestRoad ? this.world.nearestRoad(-195, z) : { x: -195, z };
-    const v = new Vehicle(this.scene, this.look, type, spot.x, spot.z, Math.PI / 2, color);
+    const v = new Vehicle(this.scene, this.look, kind, spot.x, spot.z, Math.PI / 2, paint);
     v.role = 'owned';
-    v.applyUpgrades(upgrades);
+    v.applyUpgrades({
+      engine: !!flags.engine,
+      armor: !!flags.armor,
+      handling: !!flags.handling,
+      color: colorOf(flags.color, paint),
+    });
     this.ownedVehicles.push(v);
     return v;
   }
 
+  _removeOwned(v) {
+    if (!v) return;
+    this.scene.remove(v.mesh);
+    // Vehicle owns a separate blob shadow; leaving it behind grows the scene
+    // every time the garage restores or rebuilds the fleet.
+    if (v.shadow) this.scene.remove(v.shadow);
+  }
+
   restore(descriptors = []) {
-    for (const v of this.ownedVehicles) this.scene.remove(v.mesh);
-    this.ownedVehicles.length = 0;
-    for (const d of descriptors) this.spawnVehicle(d.type, d.color, d.upgrades);
+    this.clearAll();
+    if (!Array.isArray(descriptors)) return this.ownedVehicles;
+    for (const d of descriptors) {
+      if (!d || typeof d !== 'object') continue;
+      this.spawnVehicle(d.type, d.color ?? d.upgrades?.color, d.upgrades);
+    }
     return this.ownedVehicles;
   }
 
   clearAll() {
-    for (const v of this.ownedVehicles) this.scene.remove(v.mesh);
+    for (const v of this.ownedVehicles) this._removeOwned(v);
     this.ownedVehicles.length = 0;
   }
 }

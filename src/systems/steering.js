@@ -3,6 +3,15 @@
 // the on-screen stick, device tilt or a drag surface.
 
 const MODES = new Set(['joystick', 'tilt', 'drag']);
+// Older saves used these labels; keep them loadable instead of silently
+// dropping the player back to the stick.
+const MODE_ALIASES = {
+  stick: 'joystick',
+  touch: 'drag',
+  'drag-steer': 'drag',
+  gyro: 'tilt',
+  accelerometer: 'tilt',
+};
 const TILT_RANGE = 26; // degrees that map to a full axis
 const TILT_MAX_AGE = 600; // ms before tilt data is considered stale
 const clampAxis = (value) => {
@@ -12,6 +21,14 @@ const clampAxis = (value) => {
 const nowMs = () => (typeof performance !== 'undefined' && performance.now
   ? performance.now()
   : Date.now());
+const normalizeMode = (mode) => {
+  if (typeof mode === 'string') {
+    const lower = mode.toLowerCase();
+    if (MODES.has(lower)) return lower;
+    if (MODE_ALIASES[lower]) return MODE_ALIASES[lower];
+  }
+  return 'joystick';
+};
 
 export class SteeringMode {
   constructor(mode = 'joystick') {
@@ -20,6 +37,7 @@ export class SteeringMode {
     this._surface = null;
     this._detachSurface = null;
     this._tiltBound = false;
+    this._tiltPermission = null; // null = not asked yet, true/false = resolved
     this._tilt = { x: 0, y: 0, at: -Infinity, gamma0: 0, beta0: 0, calibrated: false };
     this._drag = {
       x: 0, y: 0, active: false, id: null, startX: 0, startY: 0, radius: 42,
@@ -51,23 +69,21 @@ export class SteeringMode {
       if (e.target?.closest?.('[data-action]') || this._surface?.dataset?.editing === '1') return;
       this._drag.active = true;
       this._drag.id = e.pointerId ?? null;
-      this._drag.startX = Number(e.clientX) || 0;
-      this._drag.startY = Number(e.clientY) || 0;
+      this._drag.startX = finiteCoord(e.clientX);
+      this._drag.startY = finiteCoord(e.clientY);
       const rect = typeof this._surface?.getBoundingClientRect === 'function'
         ? this._surface.getBoundingClientRect()
         : null;
-      const width = Number(rect?.width) || 120;
-      const height = Number(rect?.height) || 120;
-      this._drag.radius = Math.max(24, Math.min(width, height) * 0.35);
+      const width = Number(rect?.width);
+      const height = Number(rect?.height);
+      const span = Number.isFinite(width) && Number.isFinite(height) ? Math.min(width, height) : 120;
+      this._drag.radius = clampAxisRadius(span * 0.35);
       this._moveDrag(e);
     };
     this._onPointerUp = (e) => {
       if (!this._drag.active) return;
       if (this._drag.id !== null && e.pointerId != null && e.pointerId !== this._drag.id) return;
-      this._drag.active = false;
-      this._drag.id = null;
-      this._drag.x = 0;
-      this._drag.y = 0;
+      this._resetDrag();
     };
 
     this.setMode(mode);
@@ -84,8 +100,20 @@ export class SteeringMode {
     return false;
   }
 
+  // True only when the platform can actually deliver orientation events.
+  get tiltAvailable() {
+    return typeof window !== 'undefined' && typeof window.DeviceOrientationEvent === 'function';
+  }
+
+  _resetDrag() {
+    this._drag.active = false;
+    this._drag.id = null;
+    this._drag.x = 0;
+    this._drag.y = 0;
+  }
+
   setMode(mode) {
-    const next = MODES.has(mode) ? mode : 'joystick';
+    const next = normalizeMode(mode);
     if (next === this._mode) return this._mode;
     this._mode = next;
 
@@ -105,13 +133,42 @@ export class SteeringMode {
       this._tiltBound = false;
     }
 
-    if (next !== 'drag') {
-      this._drag.active = false;
-      this._drag.id = null;
-      this._drag.x = 0;
-      this._drag.y = 0;
-    }
+    if (next !== 'drag') this._resetDrag();
     return this._mode;
+  }
+
+  /**
+   * iOS needs an explicit, gesture-bound permission request. Call this before
+   * switching to tilt; a denial keeps the stick active instead of leaving the
+   * car undriveable. Resolves true when tilt can be used.
+   */
+  async requestTiltPermission() {
+    const Ctor = typeof window !== 'undefined' ? window.DeviceOrientationEvent : null;
+    if (typeof Ctor !== 'function') {
+      this._tiltPermission = false;
+      return false;
+    }
+    if (typeof Ctor.requestPermission !== 'function') {
+      this._tiltPermission = true;
+      return true;
+    }
+    try {
+      const result = await Ctor.requestPermission();
+      this._tiltPermission = result === 'granted';
+    } catch (_) {
+      this._tiltPermission = false;
+    }
+    return this._tiltPermission;
+  }
+
+  async enableTilt() {
+    const allowed = await this.requestTiltPermission();
+    if (!allowed) {
+      this.setMode('joystick');
+      return false;
+    }
+    this.setMode('tilt');
+    return true;
   }
 
   // Pointer source for drag mode. Passing null detaches the old surface.
@@ -133,10 +190,7 @@ export class SteeringMode {
     for (const [name, handler] of Object.entries(handlers)) el.addEventListener(name, handler);
     this._detachSurface = () => {
       for (const [name, handler] of Object.entries(handlers)) el.removeEventListener(name, handler);
-      this._drag.active = false;
-      this._drag.id = null;
-      this._drag.x = 0;
-      this._drag.y = 0;
+      this._resetDrag();
     };
     return this;
   }
@@ -148,17 +202,15 @@ export class SteeringMode {
    */
   axisFor(joystickAxis = null, pointerAxis = null) {
     const out = this._axis;
-    const jx = Number(joystickAxis?.x);
-    const jy = Number(joystickAxis?.y);
     const passthrough = () => {
-      out.x = Number.isFinite(jx) ? jx : 0;
-      out.y = Number.isFinite(jy) ? jy : 0;
+      out.x = clampAxis(joystickAxis?.x);
+      out.y = clampAxis(joystickAxis?.y);
     };
 
     if (this._mode === 'tilt') {
       if (nowMs() - this._tilt.at < TILT_MAX_AGE) {
-        out.x = this._tilt.x;
-        out.y = this._tilt.y;
+        out.x = clampAxis(this._tilt.x);
+        out.y = clampAxis(this._tilt.y);
       } else {
         passthrough();
       }
@@ -167,8 +219,8 @@ export class SteeringMode {
 
     if (this._mode === 'drag') {
       if (this._drag.active) {
-        out.x = this._drag.x;
-        out.y = this._drag.y;
+        out.x = clampAxis(this._drag.x);
+        out.y = clampAxis(this._drag.y);
       } else if (pointerAxis && Number.isFinite(Number(pointerAxis.x)) && Number.isFinite(Number(pointerAxis.y))) {
         out.x = clampAxis(pointerAxis.x);
         out.y = clampAxis(pointerAxis.y);
@@ -188,6 +240,16 @@ export class SteeringMode {
     this.setMode('joystick');
     return this;
   }
+}
+
+function finiteCoord(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function clampAxisRadius(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(24, n) : 42;
 }
 
 export default SteeringMode;

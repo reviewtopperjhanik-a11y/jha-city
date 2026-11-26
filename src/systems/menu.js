@@ -1,9 +1,12 @@
 import { PRICES } from './economy.js';
+import { currentSlot } from '../core/save.js';
 import { STYLE_KEYS, styleLabel } from '../look/wardrobe.js';
 
 const money = (n) => `$${Math.round(n || 0)}`;
 const hex = (n) => `#${(n & 0xffffff).toString(16).padStart(6, '0')}`;
 const STORY_TOTAL = 5;
+// Keep in step with the $750 pay-'n'-spray charge in main.js.
+const SPRAY_PRICE = 750;
 
 export class Menu {
   constructor(root, { toast = () => {} } = {}) {
@@ -125,31 +128,45 @@ export class Menu {
     });
   }
 
-  showGarage(save, owned, onAction) {
-    const list = owned.length
-      ? owned.map((v, i) => `<span class="menu-chip">${i + 1}. ${v.type.toUpperCase()} · ${money(v.price || 0)}</span>`).join('')
+  showGarage(save, owned = [], onAction) {
+    const vehicles = Array.isArray(owned) ? owned.filter((v) => v && typeof v === 'object') : [];
+    const list = vehicles.length
+      ? vehicles.map((v, i) => {
+        const fitted = [v.upgrades?.engine && 'ENGINE', v.upgrades?.armor && 'ARMOR', v.upgrades?.handling && 'SUSPENSION'].filter(Boolean);
+        return `<span class="menu-chip">${i + 1}. ${String(v.type || 'vehicle').toUpperCase()} · ${money(v.price || 0)}${fitted.length ? ` · ${fitted.join(' + ')}` : ''}</span>`;
+      }).join('')
       : '<span class="menu-note">No owned vehicles yet.</span>';
-    const body = this._show('GARAGE', `
+    const count = (type) => vehicles.filter((v) => v.type === type).length;
+    const item = (action, label, price, sub = '') => {
+      const afford = Number(save.money) >= price;
+      const hint = sub || (afford ? '' : `NEED ${money(price - Math.max(0, Number(save.money) || 0))} MORE`);
+      return `<button class="menu-item" data-action="${action}"><span class="menu-item-title">${label}</span>${hint ? `<span class="menu-item-sub">${hint}</span>` : ''}${price ? `<span class="menu-item-price">${money(price)}</span>` : ''}</button>`;
+    };
+    this._show('GARAGE', `
       <div class="menu-wallet">WALLET ${money(save.money)}</div>
       <div class="menu-label">YOUR VEHICLES</div>
       <div class="menu-chips">${list}</div>
       <div class="menu-grid">
-        <button class="menu-item" data-action="buy-bike"><span class="menu-item-title">BUY BIKE</span><span class="menu-item-price">${money(PRICES.bike)}</span></button>
-        <button class="menu-item" data-action="buy-car"><span class="menu-item-title">BUY COUPE</span><span class="menu-item-price">${money(PRICES.car)}</span></button>
-        <button class="menu-item" data-action="engine"><span class="menu-item-title">ENGINE TUNE</span><span class="menu-item-price">${money(PRICES.engine)}</span></button>
-        <button class="menu-item" data-action="body"><span class="menu-item-title">REINFORCED BODY</span><span class="menu-item-price">${money(PRICES.body)}</span></button>
-        <button class="menu-item" data-action="handling"><span class="menu-item-title">SPORT SUSPENSION</span><span class="menu-item-price">${money(PRICES.handling ?? 1400)}</span></button>
-        <button class="menu-item" data-action="paint"><span class="menu-item-title">PAINT JOB</span><span class="menu-item-price">${money(PRICES.paint)}</span></button>
-        <button class="menu-item" data-action="spray"><span class="menu-item-title">PAY 'N' SPRAY</span><span class="menu-item-price">$750</span></button>
-        <button class="menu-item" data-action="drive"><span class="menu-item-title">SPAWN / DRIVE OWNED</span><span class="menu-item-sub">Closest owned vehicle or a fresh one.</span></button>
+        ${item('buy-bike', 'BUY BIKE', PRICES.bike, count('bike') ? `OWNED ×${count('bike')}` : '')}
+        ${item('buy-car', 'BUY COUPE', PRICES.car, count('car') ? `OWNED ×${count('car')}` : '')}
+        ${item('engine', 'ENGINE TUNE', PRICES.engine)}
+        ${item('armor', 'REINFORCED BODY', PRICES.armor)}
+        ${item('handling', 'SPORT SUSPENSION', PRICES.handling)}
+        ${item('paint', 'PAINT JOB', PRICES.paint)}
+        <button class="menu-item" data-action="spray"><span class="menu-item-title">PAY 'N' SPRAY</span><span class="menu-item-price">${money(SPRAY_PRICE)}</span></button>
+        <button class="menu-item" data-action="drive" ${vehicles.length ? '' : 'disabled aria-disabled="true"'}><span class="menu-item-title">SPAWN / DRIVE OWNED</span><span class="menu-item-sub">${vehicles.length ? 'Last owned vehicle or a fresh one.' : 'BUY A VEHICLE FIRST'}</span></button>
       </div>
-      <div class="menu-note">Upgrades and paint apply to the vehicle you are driving.</div>`);
+      <div class="menu-note">Prices match the cash charged at purchase. Upgrades and paint apply to the vehicle you are driving.</div>`);
     this._on('[data-action]', 'click', (e) => {
-      const action = e.currentTarget.dataset.action;
+      const btn = e.currentTarget;
+      const action = btn.dataset.action;
+      if (action === 'drive' && !vehicles.length) {
+        this.toast('BUY A VEHICLE FIRST');
+        return;
+      }
       this.close();
       onAction(action);
     });
-    void body;
   }
 
   showShop(save, onAction) {
@@ -202,20 +219,26 @@ export class Menu {
     });
   }
 
-  showSafehouse(save, slots, onAction) {
-    const rows = slots.map((s) => `<div class="menu-slot">
-      <span>SLOT ${s.index}${s.index === save.activeSlot ? ' · ACTIVE' : ''}<small>${s.exists ? `${money(s.money)} · ${s.missionsDone} jobs · story ${s.storyStep}/${STORY_TOTAL}` : 'EMPTY'}</small></span>
+  showSafehouse(save, slots = [], onAction) {
+    const available = Array.isArray(slots) ? slots : [];
+    const active = Number.isFinite(save.activeSlot) ? save.activeSlot : currentSlot();
+    const rows = available.map((s) => `<div class="menu-slot">
+      <span>SLOT ${s.index}${s.index === active ? ' · ACTIVE' : ''}<small>${s.exists ? `${money(s.money)} · ${s.missionsDone} jobs · story ${s.storyStep}/${STORY_TOTAL}` : 'EMPTY'}</small></span>
       <button data-action="save-${s.index}">SAVE</button>
-      <button data-action="load-${s.index}">LOAD</button>
+      <button data-action="load-${s.index}" ${s.exists ? '' : 'disabled aria-disabled="true"'}>LOAD</button>
     </div>`).join('');
     this._show('SAFEHOUSE', `
       <div class="menu-wallet">WALLET ${money(save.money)} · HP ${Math.round(save.hp ?? 100)} · ARMOR ${Math.round(save.armor || 0)}</div>
       <button class="menu-primary" data-action="rest">REST — FULL HEAL</button>
       <div class="menu-label">SAVE SLOTS</div>
       ${rows}
-      <div class="menu-note">Loading a slot restores cash, story progress and location.</div>`);
+      <div class="menu-note">Loading a slot restores cash, story progress and location. Empty slots cannot be loaded.</div>`);
     this._on('[data-action]', 'click', (e) => {
       const action = e.currentTarget.dataset.action;
+      if (action.startsWith('load-') && !available.find((s) => s.index === Number(action.slice(5)))?.exists) {
+        this.toast(`SLOT ${action.slice(5)} IS EMPTY`);
+        return;
+      }
       this.close();
       onAction(action);
     });

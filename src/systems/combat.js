@@ -58,7 +58,15 @@ export class Combat {
       mx: 0, my: 0, mz: 0,
       x: 0, y: 0, z: 0,
       rawX: 0, rawY: 0, rawZ: 0,
+      // Normalised ray copied from the caller's pooled descriptor. Hitscan and
+      // the tracer both read these fields, so pellets cannot diverge from the
+      // drawn line when the camera-ray fallback kicks in.
+      ox: 0, oy: 0, oz: 0,
+      dx: 0, dy: 0, dz: 1,
+      hit: false, range: AIM_FALLBACK,
     };
+    // Shotgun pellets use this fixed buffer; no array is built per shot.
+    this._pelletOffsets = new Float32Array(8);
     this._shotPoint = { x: 0, z: 0 };
 
     // Reused output objects — identity is stable across every frame.
@@ -203,11 +211,12 @@ export class Combat {
       ? frame.aimYaw
       : this._resolveYaw(rawYaw, aiming, this.autoAim && frame.autoAim !== false);
 
-    if (firing && this.isArmed() && this.weapons.canFire()) {
+    const down = !!(this.player && typeof this.player.isDown === 'function' && this.player.isDown());
+    if (!down && firing && this.isArmed() && this.weapons.canFire()) {
       const auto = !!this.weapons.stats.auto;
       if (auto || !this._triggerHeld) this.fireOnce(frame, yaw);
     }
-    this._triggerHeld = firing;
+    this._triggerHeld = firing && !down;
 
     this._policeFire(step, time, px, pz);
     this.state();
@@ -233,55 +242,86 @@ export class Combat {
     // main.js supplies one pooled camera-ray descriptor. Harnesses that call
     // fireOnce/update without it keep the original yaw-cone behaviour.
     const aim = frame.aim && typeof frame.aim === 'object' ? frame.aim : null;
-    if (aim) this._prepareAim(px, py, pz, shotYaw, aim);
+    const shot = aim ? this._prepareAim(px, py, pz, shotYaw, aim) : null;
     this._reportCrime(1, time, px, pz);
     this.audio?.shot?.(stats.id);
-    this._spawnShotFx(px, py, pz, fx, fz, stats.range, aim);
+    this._spawnShotFx(px, py, pz, fx, fz, stats.range, shot);
 
+    const pellets = Math.max(1, Math.min(this._pelletOffsets.length, Math.floor(stats.pellets) || 1));
+    let target = null;
+    if (pellets === 1) {
+      // Pistol/SMG keep the original single-hitscan arithmetic exactly.
+      this._resetHit();
+      this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz, shot);
+      this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz, shot);
+      this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz, shot);
+      target = this._applyHit(this._hitTarget, this._hitKind, stats.damage, time, px, pz);
+    } else {
+      // A shotgun round is a spread of independent pellets. Each pellet may
+      // reach a different target and damage falls off with distance, so a
+      // point-blank blast is strong without one-shotting across the whole map.
+      for (let i = 0; i < pellets; i++) {
+        const offset = ((i + 0.5) / pellets - 0.5) * stats.spread * 1.25
+          + (this.fireRng() * 2 - 1) * stats.spread * 0.45;
+        this._pelletOffsets[i] = offset;
+        this._resetHit();
+        this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz, shot, offset);
+        this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz, shot, offset);
+        this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz, shot, offset);
+        const damage = stats.damage * this._damageFalloff(this._hitAlong, stats.range);
+        const hit = this._applyHit(this._hitTarget, this._hitKind, damage, time, px, pz);
+        if (hit && !target) target = hit;
+      }
+    }
+
+    // The crosshair impact is drawn first so its pooled slot is stable even
+    // when the same shot also hits a body.
+    if (shot) this._spawnImpact(shot.rawX, shot.rawZ, shot.rawY);
+    if (!shot && target) {
+      this._spawnImpact(this._hitKind === 2 ? target.x : finite(target.x, px),
+        this._hitKind === 2 ? target.z : finite(target.z, pz));
+    }
+    if (target) {
+      this.onHit(target);
+      this.audio?.hit?.();
+    }
+    return true;
+  }
+
+  _resetHit() {
     this._hitTarget = null;
     this._hitKind = -1;
     this._hitAlong = 0;
-    this._scanTargets(this.police?.officers, 0, shotYaw, stats.range, stats.spread, px, pz, aim);
-    this._scanTargets(this.gangs?.actors?.(), 1, shotYaw, stats.range, stats.spread, px, pz, aim);
-    this._scanTargets(this.traffic?.peds, 2, shotYaw, stats.range, stats.spread * 0.7, px, pz, aim);
+  }
 
-    const target = this._hitTarget;
-    if (!target) {
-      // Geometry under the crosshair still produces a small impact spark.
-      if (aim && aim.hit && !this.lowQuality) {
-        this._spawnImpact(this._aimShot.rawX, this._aimShot.rawZ, this._aimShot.rawY);
-      }
-      return true;
-    }
-    const damage = stats.damage * stats.pellets;
-    const tx = this._hitKind === 2 ? target.x : finite(target.x, px);
-    const tz = this._hitKind === 2 ? target.z : finite(target.z, pz);
+  _damageFalloff(along, range) {
+    return clamp(1 - Math.max(0, along) / (Math.max(1, range) * 1.3), 0.42, 1);
+  }
 
-    if (this._hitKind === 0) {
-      const downed = typeof this.police?.damageOfficer === 'function'
+  // Returns the target that was actually damaged. All three owner hooks keep
+  // their original signature; no target list or damage record is allocated.
+  _applyHit(target, kind, damage, time, px, pz) {
+    if (!target) return null;
+    let downed = false;
+    if (kind === 0) {
+      downed = typeof this.police?.damageOfficer === 'function'
         ? this.police.damageOfficer(target, damage)
         : this._fallbackDamage(target, damage);
-      if (downed) this.kills++;
-    } else if (this._hitKind === 1) {
-      const downed = typeof this.gangs?.damageActor === 'function'
+    } else if (kind === 1) {
+      downed = typeof this.gangs?.damageActor === 'function'
         ? this.gangs.damageActor(target, damage)
         : this._fallbackDamage(target, damage);
-      if (downed) this.kills++;
     } else {
-      const downed = typeof this.traffic?.knockPed === 'function'
+      downed = typeof this.traffic?.knockPed === 'function'
         ? this.traffic.knockPed(target, damage)
         : this._fallbackDamage(target, damage);
       if (target.mesh) target.mesh.userData.knocked = true;
       // Shooting a civilian is a much bigger crime than firing into the air.
       this._reportCrime(2, time, px, pz, true);
       this.toast('CIVILIAN SHOT — WITNESSES CALLING');
-      if (downed) this.kills++;
     }
-    this.onHit(target);
-    this.audio?.hit?.();
-    if (aim) this._spawnImpact(this._aimShot.rawX, this._aimShot.rawZ, this._aimShot.rawY);
-    else this._spawnImpact(tx, tz);
-    return true;
+    if (downed) this.kills++;
+    return target;
   }
 
   reload() {
@@ -395,21 +435,22 @@ export class Combat {
     }
   }
 
-  _scanTargets(list, kind, yaw, range, spread, px, pz, aim = null) {
+  _scanTargets(list, kind, yaw, range, spread, px, pz, aim = null, offset = 0) {
     if (!list) return;
-    const fx = Math.sin(yaw);
-    const fz = Math.cos(yaw);
-    const rx = Math.cos(yaw);
-    const rz = -Math.sin(yaw);
+    const fx = Math.sin(yaw + offset);
+    const fz = Math.cos(yaw + offset);
+    const rx = Math.cos(yaw + offset);
+    const rz = -Math.sin(yaw + offset);
     const useAim = !!aim;
-    let ox = 0;
-    let oz = 0;
-    let adx = 0;
-    let adz = 0;
+    let ox = px;
+    let oz = pz;
+    let adx = fx;
+    let adz = fz;
     let wallAlong = Infinity;
     if (useAim) {
-      // main.js already raycast geometry: aim.hit marks a world hit and aim.x/z
-      // is its endpoint. Targets farther than that endpoint are behind the wall.
+      // main.js already raycast geometry. `_aimShot` holds the same normalised
+      // direction and endpoint the tracer draws, so shots cannot diverge from
+      // the crosshair when the near-camera fallback was used.
       ox = finite(aim.ox, px);
       oz = finite(aim.oz, pz);
       adx = finite(aim.dx, fx);
@@ -422,8 +463,16 @@ export class Combat {
         adx = fx;
         adz = fz;
       }
+      if (offset !== 0) {
+        // Rotate the camera forward by the pellet offset: right = (dz, -dx).
+        const c = Math.cos(offset);
+        const s = Math.sin(offset);
+        const bx = adx * c + adz * s;
+        adz = adz * c - adx * s;
+        adx = bx;
+      }
       if (aim.hit && Number.isFinite(aim.x) && Number.isFinite(aim.z)) {
-        wallAlong = Math.hypot(aim.x - ox, aim.z - oz);
+        wallAlong = (aim.x - ox) * adx + (aim.z - oz) * adz;
       }
     }
     const pxRay = -adz;
@@ -478,6 +527,9 @@ export class Combat {
   _policeFire(dt, time, px, pz) {
     const officers = this.police?.officers;
     if (!officers || !this.player?.damage) return;
+    // A fatal hit and an arrest can arrive in the same frame. Once the player
+    // is down no further police shot may land or spawn a second hit reaction.
+    if (typeof this.player.isDown === 'function' && this.player.isDown()) return;
     const stars = Math.max(0, Math.floor(finite(this.wanted?.stars, 0)));
     for (let i = 0; i < officers.length; i++) {
       const officer = officers[i];
@@ -624,6 +676,17 @@ export class Combat {
     }
     const valid = Number.isFinite(ex) && Number.isFinite(ey) && Number.isFinite(ez);
     const near = valid && Math.hypot(ex - px, ez - pz) < 2;
+    // Copy the ray that will actually be drawn. A sub-2m hit is a camera pull
+    // near the player, not a wall in front of the muzzle, so it never blocks
+    // hitscan targets downrange.
+    out.ox = finite(aim.ox, px);
+    out.oy = finite(aim.oy, out.my);
+    out.oz = finite(aim.oz, pz);
+    out.dx = dx;
+    out.dy = dy;
+    out.dz = dz;
+    out.range = clamp(finite(aim.range, AIM_FALLBACK), 1, AIM_FALLBACK);
+    out.hit = valid && !near && !!aim.hit;
     if (!valid || near) {
       const dist = clamp(finite(aim.range, AIM_FALLBACK), 1, AIM_FALLBACK);
       if (near) {
@@ -641,9 +704,16 @@ export class Combat {
     out.x = ex;
     out.y = ey;
     out.z = ez;
-    out.rawX = Number.isFinite(rawX) ? rawX : ex;
-    out.rawY = Number.isFinite(rawY) ? rawY : ey;
-    out.rawZ = Number.isFinite(rawZ) ? rawZ : ez;
+    if (!valid || near) {
+      out.rawX = ex;
+      out.rawY = ey;
+      out.rawZ = ez;
+    } else {
+      out.rawX = rawX;
+      out.rawY = rawY;
+      out.rawZ = rawZ;
+    }
+    return out;
   }
 
   _spawnShotFx(px, py, pz, fx, fz, range, aim = null) {

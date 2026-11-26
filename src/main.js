@@ -6,13 +6,13 @@ import { createCity } from './world/city.js';
 import { Input } from './core/input.js';
 import { GameAudio } from './core/audio.js';
 import { createHaptics } from './core/haptics.js';
-import { loadSave, saveGame, saveSlot, loadSlot, listSlots, currentSlot } from './core/save.js';
+import { loadSave, saveGame, saveSlot, loadSlot, listSlots, currentSlot, setActiveSlot } from './core/save.js';
 import { Player } from './entities/player.js';
 import { Traffic } from './systems/traffic.js';
 import { TrafficLights } from './systems/trafficlights.js';
 import { Weather } from './systems/weather.js';
 import { Menu } from './systems/menu.js';
-import { Economy, PRICES, PAINT_COLORS } from './systems/economy.js';
+import { Economy, PRICES, PAINT_COLORS, clampMoney, spendMoney, garagePrice } from './systems/economy.js';
 import { Police } from './systems/police.js';
 import { Wanted } from './systems/wanted.js';
 import { Missions } from './systems/missions.js';
@@ -141,7 +141,7 @@ const qualityListeners = [];
 const settings = new Settings(ui, look, save, {
   isMobile,
   toast: (msg) => hud.toast(msg),
-  onSaveSlot: (slot) => { save.activeSlot = slot; menu.close(); },
+  onSaveSlot: (slot) => { save.activeSlot = slot; setActiveSlot(slot); menu.close(); },
   onLoadSlot: (slot, state) => applySlotState(slot, state),
   onLook: () => openWardrobe(),
   onEditHud: () => hud.openEdit(),
@@ -159,6 +159,10 @@ const minimap = new Minimap(ui, { toast: (msg) => hud.toast(msg) });
 hud.attachMinimap(minimap.wrap);
 const initialSpawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
 const player = new Player(scene, look, initialSpawn.x, initialSpawn.z, save.armor);
+// Restore saved vitals on boot. Never boot at 0 HP — that would trigger an
+// instant death before the player gets a chance to act.
+player.hp = Math.max(1, Math.min(100, Number.isFinite(save.hp) ? save.hp : 100));
+player.armor = Math.max(0, Math.min(100, Number.isFinite(save.armor) ? save.armor : 0));
 player.applyStyle(save.style);
 player.onNotice = (msg) => hud.toast(msg);
 const economy = new Economy(scene, look, world, {
@@ -217,7 +221,7 @@ settings._apply();
 
 const missions = new Missions(scene, world, {
   reward: (amount) => {
-    save.money += amount;
+    save.money = clampMoney(save.money + (Number(amount) || 0));
     save.missionsDone += 1;
   },
   toast: (msg) => hud.toast(msg),
@@ -261,6 +265,7 @@ let deathSpawn = null;
 let deathFee = 0;
 let aimBlend = 0;
 let recoil = 0;
+let tiltPermissionRequested = false;
 
 const camDesired = new THREE.Vector3();
 const camLook = new THREE.Vector3();
@@ -292,7 +297,7 @@ const achievementFrame = {
 const mapOptions = { landmarks: world.landmarks, incidents: [] };
 const markerResult = {};
 
-function applySteeringMode(mode) {
+function applySteeringMode(mode, fromFallback = false) {
   const next = ['joystick', 'tilt', 'drag'].includes(mode) ? mode : 'joystick';
   save.steering = next;
   if (save.hudLayout && typeof save.hudLayout === 'object') save.hudLayout.steering = next;
@@ -301,6 +306,14 @@ function applySteeringMode(mode) {
     hud._applyLayout();
   }
   steering.setMode(next);
+  // iOS only delivers orientation events after an explicit, gesture-bound
+  // permission request. If it is denied or unsupported, keep the stick usable.
+  if (next === 'tilt' && !fromFallback) {
+    Promise.resolve()
+      .then(() => steering.enableTilt?.())
+      .then((ok) => { if (ok === false) applySteeringMode('joystick', true); })
+      .catch(() => applySteeringMode('joystick', true));
+  }
   return next;
 }
 
@@ -342,6 +355,8 @@ function currentVehicleDescriptor() {
 }
 
 function collectSaveState() {
+  // One place keeps wallet values sane before any save path serializes them.
+  save.money = clampMoney(save.money);
   save.x = player.pos.x;
   save.z = player.pos.z;
   save.hours = currentHours();
@@ -406,7 +421,9 @@ let lastY = 0;
 let dragMoved = 0;
 let fireDrag = false;
 function beginLookDrag(e, surface, fromFire = false) {
-  if (dead || dragPointer !== null) return;
+  // The editor owns all pointer input while it is open; never orbit the chase
+  // camera from underneath it.
+  if (dead || hud.editing || dragPointer !== null) return;
   e.preventDefault();
   dragging = true;
   fireDrag = fromFire;
@@ -621,11 +638,10 @@ function handleActions() {
 }
 
 function spend(cost) {
-  if (save.money < cost) {
+  if (!spendMoney(save, cost)) {
     hud.toast('NOT ENOUGH CASH');
     return false;
   }
-  save.money -= cost;
   return true;
 }
 
@@ -689,7 +705,7 @@ function handleGarage(action) {
       hud.toast('NO HEAT TO CLEAR');
       return;
     }
-    if (!spend(750)) return;
+    if (!spend(garagePrice('spray'))) return;
     wanted.clear(true);
     police.clearAll();
     gangs.clearAll();
@@ -715,7 +731,8 @@ function handleGarage(action) {
       hud.toast('ALREADY INSTALLED');
       return;
     }
-    if (!spend(PRICES[key])) return;
+    // The menu and the cash register read from one price table.
+    if (!spend(garagePrice(action))) return;
     economy.upgrade(v, key);
     rememberVehicle(v);
     hud.toast(key === 'handling' ? 'SPORT SUSPENSION FITTED'
@@ -745,9 +762,12 @@ function handleSafehouse(action) {
     hud.toast('RESTED — FULL HEALTH');
   } else if (action.startsWith('save-')) {
     const slot = Number(action.slice(5));
+    // Switch the active slot first: flushSave() and saveSlot() must never
+    // write the live state into the previously active slot.
+    save.activeSlot = slot;
+    setActiveSlot(slot);
     flushSave();
     saveSlot(slot, { ...save, hp: player.hp, armor: player.armor });
-    save.activeSlot = slot;
     settings._renderSlots?.();
     hud.toast(`SLOT ${slot} SAVED`);
   } else if (action.startsWith('load-')) {
@@ -766,8 +786,9 @@ function handleSafehouse(action) {
 function applySlotState(slot, state) {
   Object.assign(save, state);
   save.activeSlot = slot;
+  setActiveSlot(slot);
   menu.close();
-  missionOverlay.hide();
+  missionOverlay.hide({ runCallbacks: false });
   photo.exit();
   if (player.vehicle) player.exitVehicle(world);
   wanted.clear(true);
@@ -775,8 +796,8 @@ function applySlotState(slot, state) {
   gangs.clearAll();
   combat.reset();
   economy.restore(save.owned || []);
-  player.hp = Number.isFinite(save.hp) ? save.hp : 100;
-  player.armor = save.armor || 0;
+  player.hp = Math.max(1, Math.min(100, Number.isFinite(save.hp) ? save.hp : 100));
+  player.armor = Math.max(0, Math.min(100, Number.isFinite(save.armor) ? save.armor : 0));
   const spawn = world.nearestRoad(save.x ?? 0, save.z ?? 65);
   player.respawnAt(spawn.x, spawn.z, 0);
   clockHours = save.hours || 8;
@@ -794,6 +815,7 @@ function applySlotState(slot, state) {
   audio.setRadio(save.radio || 0);
   hud.setRadio(audio.radioLabel());
   achievements.unlocked = new Set(Array.isArray(save.achievements) ? save.achievements : []);
+  achievements.syncFromSave?.();
   settings._renderSlots?.();
   snapCamera();
   hud.toast(`SLOT ${slot} LOADED`);
@@ -879,7 +901,8 @@ function clearCameraFraction(from, target) {
 photo.raycast = (from, to) => clearCameraFraction(from, to);
 
 function isAiming() {
-  return !dead && !photo.active && !menu.isOpen && !player.vehicle
+  return !dead && !photo.active && !menu.isOpen && !settings.isOpen
+    && !missionOverlay.isOpen && !player.vehicle
     && combat.isArmed() && input.isDown('aim');
 }
 
@@ -995,11 +1018,14 @@ function beginDeath(source = null) {
   deathTimer = 3;
   menu.close();
   photo.exit();
-  missionOverlay.hide();
+  // Drop any pending pass/fail callback without firing it: death is not a
+  // dialogue choice, and a stale callback could reopen a card after respawn.
+  missionOverlay.hide({ runCallbacks: false });
   // A death cancels the run but never rewinds story progress.
   if (missions.active) guard('missions.fail', () => missions._fail?.('YOU WERE HOSPITALIZED — MISSION FAILED', 'death'));
-  deathFee = Math.min(200, Math.floor(Math.max(0, save.money) * 0.1));
-  save.money = Math.max(0, save.money - deathFee);
+  save.money = clampMoney(save.money);
+  deathFee = Math.min(200, Math.floor(save.money * 0.1));
+  save.money = clampMoney(save.money - deathFee);
   deathSpawn = deathDestination();
   const v = player.vehicle;
   if (v) {
@@ -1048,14 +1074,23 @@ let bustTimer = 0;
 let bustRelease = null;
 
 function beginBusted() {
-  if (busted) return;
+  // A fatal hit wins over an arrest: never stack the busted overlay on top of
+  // the wasted screen, and never reset the player twice.
+  if (busted || dead) return;
   menu.close();
+  photo.exit();
+  // Drop any dialog without firing its "done" callback — an arrest is not a
+  // dialogue choice, and a stale callback could relaunch a mission.
+  missionOverlay.hide({ runCallbacks: false });
   busted = true;
   bustTimer = 3.6;
   bustRelease = 'DOWNTOWN PRECINCT';
+  // An arrest cancels the run but never rewinds story progress.
+  guard('missions.cancel', () => missions.cancel('BUSTED — MISSION FAILED'));
   const stars = Math.max(1, wanted.stars);
-  const fine = Math.min(Math.max(0, save.money), 120 + stars * 260);
-  save.money = Math.max(0, save.money - fine);
+  save.money = clampMoney(save.money);
+  const fine = Math.min(save.money, 120 + stars * 260);
+  save.money = clampMoney(save.money - fine);
   const v = player.vehicle;
   if (v) {
     player.exitVehicle(world);
@@ -1142,17 +1177,22 @@ function frameStep(now) {
   const rawDt = Math.max(0.0001, (now - last) / 1000);
   const dt = Math.min(0.05, Math.max(0.001, rawDt));
   last = now;
-  gameTime += dt;
-  clockHours = (clockHours + dt * (24 / (Math.max(1, save.dayLength || 10) * 60))) % 24;
-  guard('input.poll', () => input.poll());
   const overlayOpen = !!missionOverlay.isOpen;
-  if ((menu.isOpen || overlayOpen) && photo.active) guard('photo.exit.overlay', () => photo.exit());
+  const settingsOpen = !!settings.isOpen;
+  const paused = menu.isOpen || settingsOpen || overlayOpen;
+  // A paused game freezes both gameplay time and the day/night clock.
+  if (!paused) {
+    gameTime += dt;
+    clockHours = (clockHours + dt * (24 / (Math.max(1, save.dayLength || 10) * 60))) % 24;
+  }
+  guard('input.poll', () => input.poll());
+  if (paused && photo.active) guard('photo.exit.overlay', () => photo.exit());
   // One mode drives both the button set and the input context. The joystick
   // stays available in every situation; the bottom-centre zone stays empty.
   const nearVehicle = !player.vehicle && !!traffic.nearestVehicle(player.pos);
-  const armed = !player.vehicle && !photo.active && !menu.isOpen && !settings.isOpen && !overlayOpen && combat.isArmed();
+  const armed = !player.vehicle && !photo.active && !menu.isOpen && !settingsOpen && !overlayOpen && combat.isArmed();
   const hudMode = dead ? 'menu' : photo.active ? 'photo'
-    : (menu.isOpen || settings.isOpen || overlayOpen) ? 'menu'
+    : (menu.isOpen || settingsOpen || overlayOpen) ? 'menu'
       : player.vehicle ? (player.vehicle.type === 'bike' ? 'bike' : 'car')
         : armed ? 'armed'
           : nearVehicle ? 'nearVehicle' : 'foot';
@@ -1181,7 +1221,9 @@ function frameStep(now) {
     return;
   }
 
-  if (menu.isOpen || overlayOpen) {
+  // Settings is a true pause: while it is open the world, traffic, police,
+  // missions and the day/night clock must not advance.
+  if (paused) {
     idleFrameAudio(dt, rawDt);
     guard('render', renderFrame);
     return;

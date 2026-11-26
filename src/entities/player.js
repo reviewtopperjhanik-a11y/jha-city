@@ -21,6 +21,12 @@ export class Player {
     this.hp = 100;
     this.armor = Math.max(0, Math.min(100, armor || 0));
     this.invulnerable = 0;
+    // Down-state flags are owned by the player so every system can see the
+    // same truth. `dead` is set the instant HP reaches zero, which lets the
+    // game layer give death priority over an arrest in the same frame.
+    // `busted` is set by the game layer while the BUSTED overlay is up.
+    this.dead = false;
+    this.busted = false;
     // Reused by onDamage so a hit never allocates an object per frame.
     this._damageSource = { x: 0, z: 0, valid: false, dx: 0, dz: 0, distance: 0 };
     this.vehicle = null;
@@ -168,6 +174,20 @@ export class Player {
     return this.transition.mode !== 'idle';
   }
 
+  // One read for every caller that must not act on a downed player. Checking
+  // hp as well keeps legacy direct assignments to player.hp safe.
+  isDown() {
+    return this.dead || this.busted || this.hp <= 0;
+  }
+
+  // Set by the game layer when the BUSTED overlay opens. It never touches
+  // world, save, HUD or clock state — that is the caller's responsibility.
+  setBusted(on) {
+    this.busted = !!on;
+    if (this.busted) this._footSpeed = 0;
+    return this.busted;
+  }
+
   _resetTransitionVisuals() {
     const tr = this.transition;
     this.foot.scale.set(1, 1, 1);
@@ -289,14 +309,18 @@ export class Player {
   }
 
   damage(amount, source = null) {
-    if (this.invulnerable > 0) return 0;
+    // Once down, later hits in the same frame are ignored. That prevents a
+    // police shot arriving after a fatal hit from producing a second overlay.
+    if (this.dead || this.hp <= 0 || this.busted || this.invulnerable > 0) return 0;
     const raw = Math.max(0, amount || 0);
     if (raw <= 0) return 0;
     const absorbed = Math.min(this.armor, raw);
     this.armor -= absorbed;
     const toHealth = raw - absorbed;
     this.hp = Math.max(0, this.hp - toHealth);
-    this.onDamage(toHealth || raw * 0.15, absorbed > 0, this._readDamageSource(source));
+    const info = this._readDamageSource(source);
+    if (this.hp <= 0) this.dead = true;
+    this.onDamage(toHealth || raw * 0.15, absorbed > 0, info);
     return toHealth;
   }
 
@@ -342,6 +366,9 @@ export class Player {
 
   heal(amount = 35) {
     this.hp = Math.min(100, this.hp + amount);
+    // A revive through a health pickup or a safehouse is also a player-state
+    // reset; the game layer still owns any overlay that was showing.
+    if (this.hp > 0) this.dead = false;
     return this.hp;
   }
 
@@ -350,15 +377,29 @@ export class Player {
     return this.armor;
   }
 
+  // The only reset a death/bust respawn performs: player state and the
+  // player's own ride. World, traffic, missions, save, HUD and clock are
+  // deliberately untouched here.
   respawnAt(x, z, heading = 0) {
+    const previous = this.vehicle;
+    if (previous) {
+      previous.ai = false;
+      previous.role = 'parked';
+      previous.speed = 0;
+      previous.stuckTime = 0;
+    }
     this.vehicle = null;
     this.pos.set(x, 0, z);
     this.heading = wrapAngle(heading);
     this.vy = 0;
     this.onGround = true;
     this.hp = 100;
+    this.dead = false;
+    this.busted = false;
     this.walkPhase = 0;
     this._footSpeed = 0;
+    // Invulnerability is intentionally preserved: the game layer grants respawn
+    // grace after calling this method.
     this.foot.position.copy(this.pos);
     this.foot.rotation.set(0, this.heading, 0);
     this.foot.visible = true;
@@ -370,6 +411,11 @@ export class Player {
   update(dt, input, world, cameraYaw, surfaceGrip = 1, aimYaw = null, aiming = false) {
     // Respawn protection (set by the game layer) ticks in both foot and car modes.
     if (this.invulnerable > 0) this.invulnerable = Math.max(0, this.invulnerable - dt);
+    if (this.dead || this.busted) {
+      this._footSpeed = 0;
+      this._applyTransition(dt);
+      return;
+    }
     const aimingNow = !!aiming && Number.isFinite(aimYaw) && !this.vehicle;
     if (this.vehicle) {
       const v = this.vehicle;

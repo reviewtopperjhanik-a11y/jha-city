@@ -328,12 +328,22 @@ export class Minimap {
   // The one place world coordinates become map pixels. axis 'x' projects a
   // world X value, axis 'z' a world Z value, with the optional companion
   // coordinate needed for rotation. Legacy four-argument calls stay north-up.
+  //
+  // The screen axes after rotation are the camera's right and forward vectors:
+  //   px = dx * cos(rot) - dz * sin(rot)
+  //   py = dx * sin(rot) + dz * cos(rot)   (screen Y grows downward)
+  // view.rot = heading + PI, so the player's forward direction points up and
+  // the north badge (world -Z) lands at (sin(rot), -cos(rot)). Both axes must
+  // use the SAME rotation matrix; swapping dx/dz on the Y axis used to collapse
+  // a point directly ahead onto the player at 90/270 degrees.
   _toPx(v, c, S, view, axis = 'x', other = 0, otherC = 0) {
     const d1 = v - c;
     const d2 = other - otherC;
     const cos = view.cos === undefined ? 1 : view.cos;
     const sin = view.sin === undefined ? 0 : view.sin;
-    const rotated = axis === 'z' ? d1 * sin + d2 * cos : d1 * cos - d2 * sin;
+    // axis 'x': d1 = dx, d2 = dz -> dx*cos - dz*sin.
+    // axis 'z': d1 = dz, d2 = dx -> dx*sin + dz*cos.
+    const rotated = axis === 'z' ? d2 * sin + d1 * cos : d1 * cos - d2 * sin;
     return S / 2 + rotated * S / (view.range * 2);
   }
 

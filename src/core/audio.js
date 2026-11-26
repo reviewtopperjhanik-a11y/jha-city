@@ -15,12 +15,23 @@ export const RADIO_STATIONS = [
   },
 ];
 
+const OSC_TYPES = new Set(['sine', 'square', 'triangle', 'sawtooth']);
+const MIN_GAIN = 0.0001;
+
+const finite = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const inRange = (value, fallback, lo, hi) => Math.max(lo, Math.min(hi, finite(value, fallback)));
+
 export class GameAudio {
   constructor() {
     this.ctx = null;
     this.master = null;
     this.engine = null;
     this.engineGain = null;
+    this.engineFilter = null;
     this.siren = null;
     this.sirenGain = null;
     this.sirenPan = null;
@@ -42,8 +53,21 @@ export class GameAudio {
     // mute point; every synth voice (including radio notes) feeds it.
     this.enabled = true;
     this.volume = 0.55;
-    this.engineFilter = null;
     this._graphBuilt = false;
+    this._unlocked = false;
+    this._lastTime = 0;
+  }
+
+  // Resuming a suspended context outside a user gesture returns a rejected
+  // promise on some WebViews. Never let that become an unhandled rejection.
+  _resume() {
+    if (!this.ctx || this.ctx.state !== 'suspended' || typeof this.ctx.resume !== 'function') return;
+    try {
+      const pending = this.ctx.resume();
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch (_) {
+      /* autoplay refused — stay silent until the next real gesture */
+    }
   }
 
   // Mute without tearing down the context: gain goes to zero immediately and
@@ -52,9 +76,16 @@ export class GameAudio {
     const next = !!on;
     const wasEnabled = this.enabled;
     this.enabled = next;
-    if (this.master) this.master.gain.value = next ? this.volume : 0;
+    if (this.master) {
+      const value = next ? this.volume : 0;
+      if (typeof this.master.gain.setValueAtTime === 'function') {
+        this.master.gain.setValueAtTime(value, this.ctx ? this.ctx.currentTime : 0);
+      } else {
+        this.master.gain.value = value;
+      }
+    }
     if (!next) return;
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    this._resume();
     if (wasEnabled === next && this._graphBuilt) return;
     // Deferred graph creation keeps a muted session oscillator-free.
     if (this.ctx) this._ensureGraph();
@@ -65,7 +96,13 @@ export class GameAudio {
     const n = Number(v);
     const volume = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : this.volume;
     this.volume = volume;
-    if (this.master && this.enabled) this.master.gain.value = volume;
+    if (this.master && this.enabled) {
+      if (typeof this.master.gain.setValueAtTime === 'function') {
+        this.master.gain.setValueAtTime(volume, this.ctx ? this.ctx.currentTime : 0);
+      } else {
+        this.master.gain.value = volume;
+      }
+    }
     return volume;
   }
 
@@ -77,19 +114,35 @@ export class GameAudio {
     return `♪ ${this.radioStation.label}`;
   }
 
+  // Accepts an index (including negative/overflowing ones) or a station key.
   setRadio(index) {
-    const next = ((Math.round(Number(index) || 0) % RADIO_STATIONS.length) + RADIO_STATIONS.length) % RADIO_STATIONS.length;
+    let next = this.radioIndex;
+    if (typeof index === 'string') {
+      const key = index.toLowerCase();
+      const found = RADIO_STATIONS.findIndex((s) => s.key === key || s.label.toLowerCase() === key);
+      if (found >= 0) next = found;
+    } else {
+      const n = Number(index);
+      if (Number.isFinite(n)) next = Math.trunc(n);
+    }
+    next = ((next % RADIO_STATIONS.length) + RADIO_STATIONS.length) % RADIO_STATIONS.length;
     this.radioIndex = next;
     this.radioStep = 0;
     this.radioTime = 0;
     if (this.radioGain && this.ctx) {
-      this.radioGain.gain.setTargetAtTime(next === 0 ? 0 : 0.7, this.ctx.currentTime, 0.12);
+      const value = next === 0 ? 0 : 0.7;
+      if (typeof this.radioGain.gain.setTargetAtTime === 'function') {
+        this.radioGain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.12);
+      } else {
+        this.radioGain.gain.value = value;
+      }
     }
     return this.radioStation;
   }
 
   radioNext(delta = 1) {
-    return this.setRadio(this.radioIndex + delta);
+    const n = finite(delta, 1);
+    return this.setRadio(this.radioIndex + Math.trunc(n));
   }
 
   radioToggle() {
@@ -101,34 +154,43 @@ export class GameAudio {
     if (!this.enabled) return false;
     const station = this.radioStation;
     if (!station.notes.length || !this.radioGain || !this.ctx) return false;
-    const freq = station.notes[this.radioStep % station.notes.length];
+    const at = inRange(time, this.ctx.currentTime, 0, this.ctx.currentTime + 3600);
+    const freq = inRange(station.notes[this.radioStep % station.notes.length], 261.6, 20, 12000);
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
-    o.type = station.type;
+    o.type = OSC_TYPES.has(station.type) ? station.type : 'sine';
     o.frequency.value = freq;
-    const dur = station.tempo * 0.9;
-    g.gain.setValueAtTime(0.0001, time);
-    g.gain.linearRampToValueAtTime(0.06, time + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    const dur = inRange(station.tempo, 0.3, 0.05, 2) * 0.9;
+    g.gain.setValueAtTime(MIN_GAIN, at);
+    g.gain.linearRampToValueAtTime(0.06, at + 0.02);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, at + dur);
     o.connect(g).connect(this.radioGain);
-    o.start(time);
-    o.stop(time + dur + 0.02);
+    o.start(at);
+    o.stop(at + dur + 0.02);
     this.radioStep++;
     return true;
   }
 
+  // Only call this from a real user gesture (main.js binds pointerdown/keydown
+  // once). No context or persistent voice is created at module load.
   unlock() {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      this._resume();
       if (this.enabled) this._ensureGraph();
       return;
     }
     const AC = typeof window !== 'undefined' ? window.AudioContext || window.webkitAudioContext : null;
     if (!AC) return;
-    this.ctx = new AC();
+    try {
+      this.ctx = new AC();
+    } catch (_) {
+      return; // audio is optional; a WebView may refuse a second context
+    }
     this.master = this.ctx.createGain();
     this.master.gain.value = this.enabled ? this.volume : 0;
     this.master.connect(this.ctx.destination);
+    this._unlocked = true;
+    this._resume(); // the gesture that unlocked us may have created a suspended ctx
     if (this.enabled) this._ensureGraph();
   }
 
@@ -180,8 +242,9 @@ export class GameAudio {
     this.rotorGain = rg;
 
     // Looping filtered noise for rain. Generated once, gain driven by weather.
-    const frames = Math.floor(this.ctx.sampleRate * 2);
-    const buffer = this.ctx.createBuffer(1, frames, this.ctx.sampleRate);
+    const sampleRate = inRange(this.ctx.sampleRate, 44100, 8000, 96000);
+    const frames = Math.max(1, Math.floor(sampleRate * 2));
+    const buffer = this.ctx.createBuffer(1, frames, sampleRate);
     const data = buffer.getChannelData(0);
     let brown = 0;
     for (let i = 0; i < frames; i++) {
@@ -238,31 +301,37 @@ export class GameAudio {
     this.hornCooldown = 0.6;
     const now = this.ctx.currentTime;
     for (const freq of [392, 494]) {
-      const osc = this.ctx.createOscillator();
+      const o = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, now);
+      o.type = 'square';
+      o.frequency.value = freq;
+      gain.gain.setValueAtTime(MIN_GAIN, now);
       gain.gain.linearRampToValueAtTime(0.055, now + 0.025);
       gain.gain.setValueAtTime(0.055, now + 0.22);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
-      osc.connect(gain).connect(this.master);
-      osc.start(now);
-      osc.stop(now + 0.38);
+      gain.gain.exponentialRampToValueAtTime(MIN_GAIN, now + 0.36);
+      o.connect(gain).connect(this.master);
+      o.start(now);
+      o.stop(now + 0.38);
     }
   }
 
+  // One scheduling path for every one-shot, including every shot variant.
+  // Non-finite values are rejected before they reach Web Audio automation.
   blip(freq = 660, dur = 0.14, type = 'sine', vol = 0.12) {
-    if (!this.ctx || !this.enabled) return;
+    if (!this.ctx || !this.enabled || !this.master) return false;
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
-    o.type = type;
-    o.frequency.value = freq;
-    g.gain.setValueAtTime(vol, this.ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + dur);
+    o.type = OSC_TYPES.has(type) ? type : 'sine';
+    o.frequency.value = inRange(freq, 660, 20, 12000);
+    const length = inRange(dur, 0.14, 0.01, 2);
+    const level = Math.max(MIN_GAIN, inRange(vol, 0.12, 0, 0.5));
+    const at = finite(this.ctx.currentTime, 0) + 0.001;
+    g.gain.setValueAtTime(level, at);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, at + length);
     o.connect(g).connect(this.master);
-    o.start();
-    o.stop(this.ctx.currentTime + dur + 0.02);
+    o.start(at);
+    o.stop(at + length + 0.02);
+    return true;
   }
 
   // Phase 4 combat cues: short synthesised transients built from the same
@@ -289,12 +358,34 @@ export class GameAudio {
     this.blip(142, 0.06, 'triangle', 0.075);
   }
 
-  update(dt, { speed = 0, throttle = 0, wanted = 0, driving = false, time = 0, siren = 0, sirenPan = 0, heli = 0, rain = 0, skid = 0 }) {
-    if (!this.ctx || !this.enabled || !this._graphBuilt) return;
-    const now = this.ctx.currentTime;
-    this.hornCooldown = Math.max(0, this.hornCooldown - dt);
+  update(dt, frame = {}) {
+    if (!this.ctx || !this.enabled || !this._graphBuilt || !this.master) return;
+    const now = finite(this.ctx.currentTime, 0);
+    const step = inRange(dt, 0, 0, 1);
+    this.hornCooldown = Math.max(0, this.hornCooldown - step);
+
+    const speed = inRange(frame.speed, 0, 0, 600);
+    const throttle = inRange(frame.throttle, 0, 0, 1);
+    const wanted = inRange(frame.wanted, 0, 0, 5);
+    const driving = !!frame.driving;
+    const siren = inRange(frame.siren, 0, 0, 1);
+    const sirenPan = inRange(frame.sirenPan, 0, -1, 1);
+    const heli = inRange(frame.heli, 0, 0, 1);
+    const rain = inRange(frame.rain, 0, 0, 1);
+    const skid = inRange(frame.skid, 0, 0, 1);
+    const time = finite(frame.time, this._lastTime);
+    // Corrupt or stale deadlines must never leak into note scheduling.
+    if (!Number.isFinite(this.radioTime)) this.radioTime = 0;
+    if (!Number.isFinite(this.nextNote)) this.nextNote = 0;
+    // A slot load can move game time backwards; drop stale note deadlines.
+    if (time < this._lastTime - 0.5) {
+      this.radioTime = 0;
+      this.nextNote = 0;
+    }
+    this._lastTime = time;
+
     if (this.rainGain) this.rainGain.gain.setTargetAtTime(rain * 0.05, now, 0.4);
-    if (this.skidGain) this.skidGain.gain.setTargetAtTime(Math.min(1, Math.max(0, skid)) * 0.055, now, 0.08);
+    if (this.skidGain) this.skidGain.gain.setTargetAtTime(skid * 0.055, now, 0.08);
     if (this.skidFilter) this.skidFilter.frequency.setTargetAtTime(1300 + speed * 60, now, 0.1);
     if (this.ambientGain) {
       this.ambientGain.gain.setTargetAtTime((driving ? 0.008 : 0.004) + Math.min(0.016, speed * 0.0005), now, 0.4);

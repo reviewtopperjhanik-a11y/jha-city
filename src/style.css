@@ -92,6 +92,8 @@ html, body {
   inset: 0;
   display: none;
   place-items: center;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+           max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   pointer-events: auto;
   background: rgba(5, 6, 15, 0.8);
   z-index: 40;
@@ -99,6 +101,8 @@ html, body {
 .map-overlay.open { display: grid; }
 .map-panel {
   width: min(80vmin, 620px);
+  max-height: 100%;
+  overflow: auto;
   padding: 7px;
   border-radius: 16px;
   background: linear-gradient(155deg, rgba(30, 27, 55, 0.98), rgba(12, 13, 27, 0.98));
@@ -110,8 +114,8 @@ html, body {
 .map-sub { color: #8ff0e8; opacity: 0.7; font-size: 9px; letter-spacing: 2px; }
 .map-close {
   margin-left: 6px;
-  width: 30px;
-  height: 30px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 1px solid rgba(247, 102, 133, 0.65);
   background: rgba(12, 13, 27, 0.75);
@@ -133,7 +137,8 @@ html, body {
 .map-body { position: relative; }
 .map-canvas {
   display: block;
-  width: 100%;
+  /* Square canvas never pushes the panel past a short landscape viewport. */
+  width: min(100%, calc(100vh - 160px));
   aspect-ratio: 1;
   border-radius: 10px;
   background: #080a14;
@@ -151,8 +156,8 @@ html, body {
   gap: 6px;
 }
 .map-controls button {
-  width: 32px;
-  height: 32px;
+  width: 48px;
+  height: 48px;
   border-radius: 9px;
   border: 1px solid rgba(143, 240, 232, 0.5);
   background: rgba(12, 13, 27, 0.82);
@@ -165,6 +170,8 @@ html, body {
 }
 .map-controls button:active { background: rgba(47, 182, 178, 0.35); }
 .map-clear {
+  min-width: 48px;
+  min-height: 48px;
   padding: 2px 7px;
   border-radius: 6px;
   border: 1px solid rgba(255, 169, 72, 0.5);
@@ -189,6 +196,8 @@ html, body {
   inset: 0;
   display: none;
   place-items: center;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+           max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   pointer-events: auto;
   background: rgba(5, 6, 15, 0.78);
   z-index: 50;
@@ -196,7 +205,9 @@ html, body {
 .settings-overlay.open { display: grid; }
 .settings-panel {
   width: min(88vw, 430px);
-  padding: 13px 14px 12px;
+  max-height: 100%;
+  overflow: auto;
+  padding: 13px 14px max(12px, env(safe-area-inset-bottom));
   border-radius: 16px;
   background: linear-gradient(155deg, rgba(30, 27, 55, 0.98), rgba(12, 13, 27, 0.98));
   border: 1px solid rgba(47, 182, 178, 0.55);
@@ -206,8 +217,8 @@ html, body {
 .settings-title { color: #8ff0e8; font-size: 14px; font-weight: 800; letter-spacing: 3px; }
 .settings-close {
   margin-left: auto;
-  width: 30px;
-  height: 30px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 1px solid rgba(247, 102, 133, 0.65);
   background: rgba(12, 13, 27, 0.75);
@@ -226,6 +237,7 @@ html, body {
 }
 .quality-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .quality-btn {
+  min-height: 48px;
   padding: 9px 2px;
   border-radius: 8px;
   border: 1px solid rgba(122, 120, 146, 0.5);
@@ -251,6 +263,7 @@ html, body {
 }
 .settings-toggle {
   width: 100%;
+  min-height: 48px;
   padding: 8px;
   border-radius: 8px;
   border: 1px solid rgba(255, 169, 72, 0.4);
@@ -292,6 +305,8 @@ html, body {
 .slot-item.active { border-color: rgba(143, 240, 232, 0.65); }
 .slot-item small { display: block; color: rgba(255, 233, 210, 0.48); font-size: 8px; font-weight: 600; }
 .slot-item button {
+  min-width: 48px;
+  min-height: 48px;
   padding: 4px 7px;
   border-radius: 6px;
   border: 1px solid rgba(255, 169, 72, 0.45);
@@ -330,6 +345,8 @@ html, body {
   inset: 0;
   display: none;
   place-items: center;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+           max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   pointer-events: auto;
   background: rgba(5, 6, 15, 0.82);
   z-index: 60;
@@ -337,9 +354,9 @@ html, body {
 .menu-overlay.open { display: grid; }
 .menu-panel {
   width: min(90vw, 470px);
-  max-height: 84vh;
+  max-height: 100%;
   overflow: auto;
-  padding: 12px 14px 14px;
+  padding: 12px 14px max(14px, env(safe-area-inset-bottom));
   border-radius: 16px;
   background: linear-gradient(155deg, rgba(30, 27, 55, 0.99), rgba(12, 13, 27, 0.99));
   border: 1px solid rgba(247, 102, 133, 0.55);
@@ -349,8 +366,8 @@ html, body {
 .menu-title { color: #ffd9a0; font-size: 15px; font-weight: 900; letter-spacing: 3px; }
 .menu-close {
   margin-left: auto;
-  width: 30px;
-  height: 30px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 1px solid rgba(247, 102, 133, 0.65);
   background: rgba(12, 13, 27, 0.75);
@@ -368,6 +385,7 @@ html, body {
 .menu-item {
   display: grid;
   gap: 3px;
+  min-height: 48px;
   padding: 9px 10px;
   text-align: left;
   border-radius: 10px;
@@ -384,6 +402,7 @@ html, body {
 .menu-item-price { font-size: 9px; font-weight: 800; color: #ffa948; }
 .menu-primary {
   width: 100%;
+  min-height: 48px;
   padding: 10px;
   border-radius: 9px;
   border: 1px solid rgba(143, 240, 232, 0.6);
@@ -414,6 +433,8 @@ html, body {
 }
 .menu-slot small { display: block; color: rgba(255, 233, 210, 0.5); font-size: 8px; font-weight: 600; }
 .menu-slot button {
+  min-width: 48px;
+  min-height: 48px;
   padding: 5px 9px;
   border-radius: 6px;
   border: 1px solid rgba(255, 169, 72, 0.5);
@@ -429,10 +450,16 @@ html, body {
   .map-brand { font-size: 12px; letter-spacing: 1.5px; }
   .map-sub { display: none; }
   .map-tip { display: none; }
-  .settings-panel { width: min(80vw, 430px); }
+  .map-canvas { width: min(100%, calc(100vh - 140px)); }
+  .map-legend { gap: 3px 8px; padding-top: 4px; }
+  .settings-panel, .menu-panel { max-height: 100%; padding-top: 9px; padding-bottom: 9px; }
+  .settings-panel { width: min(88vw, 430px); }
+  .settings-head, .menu-head { padding-bottom: 5px; }
+  .settings-label, .menu-label { padding-bottom: 3px; }
   .settings-note { margin: 6px 0 8px; }
-  .menu-panel { max-height: 92vh; }
-  .menu-grid { grid-template-columns: 1fr 1fr; }
+  .settings-tip { display: none; }
+  .menu-grid { grid-template-columns: 1fr 1fr; gap: 5px; }
+  .menu-body { gap: 5px; }
 }
 
 .wardrobe-preview {
@@ -461,7 +488,7 @@ html, body {
   letter-spacing: 1px;
 }
 .wardrobe-row button {
-  min-height: 34px;
+  min-height: 48px;
   border-radius: 8px;
   border: 1px solid rgba(255, 169, 72, 0.6);
   background: rgba(12, 13, 27, 0.7);
